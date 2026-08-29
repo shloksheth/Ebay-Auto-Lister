@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Amazon → eBay Lister Helper",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Adds buttons next to the Amazon product title to copy/download listing info, and to auto-fill that title, description, price, and photos into an open eBay listing form.",
   "permissions": ["downloads", "activeTab", "scripting", "storage", "unlimitedStorage"],
   "host_permissions": [

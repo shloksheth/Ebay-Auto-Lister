@@ -191,3 +191,34 @@
   color: #666;
   line-height: 1.35;
 }
+
+.a2e-panel-step {
+  padding: 10px 10px 0;
+  border-top: 1px solid #eee;
+  margin-top: 8px;
+}
+
+.a2e-panel-step:first-of-type {
+  border-top: none;
+  margin-top: 0;
+}
+
+.a2e-step-label {
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 4px;
+}
+
+.a2e-step-status {
+  color: #666;
+  line-height: 1.35;
+  padding-bottom: 4px;
+}
+
+.a2e-step-status.a2e-ok {
+  color: #1e7e34;
+}
+
+.a2e-step-status.a2e-fail {
+  color: #b3261e;
+}

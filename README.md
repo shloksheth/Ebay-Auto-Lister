@@ -40,12 +40,14 @@ always review and click eBay's own "List it" button yourself.
 1. Click the second (upload-arrow) icon next to the title.
 2. A new eBay tab opens (`ebay.com/sl/sell`) and your data is handed off in
    the background.
-3. On the eBay tab, start (or continue) creating your listing as normal —
-   search for the item / pick a category until you reach the actual listing
-   form with title, description, price, and photo fields.
-4. A small panel appears in the bottom-right corner of the eBay page. Click
-   **"Autofill this form"**. It will report which fields it managed to fill
-   (✓) and which it couldn't find (✗) so you can finish those manually.
+3. A panel appears bottom-right on the eBay tab. **Step 1** happens
+   automatically: it finds eBay's "what are you selling?" search box and
+   types the product title in for you. eBay requires you to pick a catalog
+   match / category yourself here — that part needs your judgment, so
+   review the suggestions and continue as normal.
+4. Once you reach the actual listing form (title, description, price, photo
+   fields), click **"Autofill listing details"** in the panel (**Step 2**).
+   It reports which fields it filled (✓) and which it couldn't find (✗).
 5. **Review everything** — title length/wording, description formatting,
    price, and that all photos attached correctly — before you click eBay's
    own submit/"List it" button. The extension never publishes anything for

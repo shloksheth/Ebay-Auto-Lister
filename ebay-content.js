@@ -76,6 +76,81 @@
     return true;
   }
 
+  // ---------- Step 1: eBay's "what are you selling?" search/match step ----------
+  // Before the real listing form exists, eBay makes you search for the item
+  // so it can offer catalog matches / a category. We can't (and shouldn't)
+  // pick a match for you, but we can save the copy-paste by dropping the
+  // title into that search box automatically.
+
+  function isInGlobalHeader(el) {
+    if (el.closest("header, nav")) return true;
+    if (/^gh-/i.test(el.id || "")) return true; // eBay's global header search
+    return false;
+  }
+
+  function findListingSearchBox() {
+    const inputs = Array.from(
+      document.querySelectorAll('input[type="text"], input[type="search"], input:not([type])')
+    ).filter((el) => el.offsetParent !== null && !isInGlobalHeader(el));
+
+    const hints = [
+      "what.*selling",
+      "search.*item",
+      "item.*name",
+      "brand.*model",
+      "upc",
+      "isbn",
+      "product",
+    ];
+    for (const hint of hints) {
+      const re = new RegExp(hint, "i");
+      for (const el of inputs) {
+        const haystack = [
+          el.name,
+          el.id,
+          el.getAttribute("aria-label"),
+          el.placeholder,
+        ]
+          .filter(Boolean)
+          .join(" ");
+        if (re.test(haystack)) return el;
+      }
+    }
+    return null;
+  }
+
+  function fillSearchBox(title) {
+    const el = findListingSearchBox();
+    if (!el) return false;
+    setNativeValue(el, title);
+    el.focus();
+    return true;
+  }
+
+  function watchForSearchBox(title, onFilled, timeoutMs) {
+    if (fillSearchBox(title)) {
+      onFilled(true);
+      return;
+    }
+    const deadline = Date.now() + timeoutMs;
+    const observer = new MutationObserver(() => {
+      if (fillSearchBox(title)) {
+        observer.disconnect();
+        onFilled(true);
+      } else if (Date.now() > deadline) {
+        observer.disconnect();
+        onFilled(false);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    setTimeout(() => {
+      observer.disconnect();
+      if (!document.activeElement || document.activeElement === document.body) {
+        onFilled(fillSearchBox(title));
+      }
+    }, timeoutMs);
+  }
+
   function fillPrice(price) {
     if (!price) return false;
     const numeric = (price.match(/[\d.]+/) || [])[0];
@@ -190,14 +265,39 @@
       <div class="a2e-panel-title">${escapeHtml(listing.title.slice(0, 70))}${
       listing.title.length > 70 ? "…" : ""
     }</div>
-      <button type="button" class="a2e-panel-fill">Autofill this form</button>
-      <div class="a2e-panel-status"></div>
+      <div class="a2e-panel-step">
+        <div class="a2e-step-label">Step 1 · Search box</div>
+        <div class="a2e-step-status a2e-step-pending">Looking for eBay's search field…</div>
+      </div>
+      <div class="a2e-panel-step">
+        <div class="a2e-step-label">Step 2 · Once you're on the listing form</div>
+        <button type="button" class="a2e-panel-fill">Autofill listing details</button>
+        <div class="a2e-panel-status"></div>
+      </div>
     `;
     document.body.appendChild(panel);
 
     panel.querySelector(".a2e-panel-close").addEventListener("click", () => {
       panel.remove();
     });
+
+    const searchStatus = panel.querySelector(".a2e-step-status");
+    watchForSearchBox(
+      listing.title,
+      (found) => {
+        searchStatus.classList.remove("a2e-step-pending");
+        if (found) {
+          searchStatus.classList.add("a2e-ok");
+          searchStatus.textContent =
+            "✓ Typed the title in — check the match eBay suggests, then continue.";
+        } else {
+          searchStatus.classList.add("a2e-fail");
+          searchStatus.textContent =
+            "✗ Couldn't find it yet. Paste manually: " + listing.title.slice(0, 60);
+        }
+      },
+      8000
+    );
 
     panel.querySelector(".a2e-panel-fill").addEventListener("click", () => {
       const status = panel.querySelector(".a2e-panel-status");
@@ -222,18 +322,12 @@
         .join("");
 
       const anyFailed = results.some(([, ok]) => !ok);
-      if (anyFailed) {
-        const note = document.createElement("div");
-        note.className = "a2e-status-note";
-        note.textContent =
-          "Some fields weren't found on this page — fill those in manually, then review everything before publishing.";
-        status.appendChild(note);
-      } else {
-        const note = document.createElement("div");
-        note.className = "a2e-status-note";
-        note.textContent = "Double-check everything, then publish on eBay when ready.";
-        status.appendChild(note);
-      }
+      const note = document.createElement("div");
+      note.className = "a2e-status-note";
+      note.textContent = anyFailed
+        ? "Some fields weren't found on this page yet — if you're not on the listing-details step yet, finish picking a match/category first, then click this again. Otherwise fill those in manually."
+        : "Double-check everything, then publish on eBay when ready.";
+      status.appendChild(note);
     });
   }
 
