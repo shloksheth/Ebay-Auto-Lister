@@ -20,12 +20,29 @@
       <polyline points="20 6 9 17 4 12"></polyline>
     </svg>`;
 
+  const EBAY_SVG = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7"></path>
+      <polyline points="16 6 12 2 8 6"></polyline>
+      <line x1="12" y1="2" x2="12" y2="15"></line>
+    </svg>`;
+
   function getTitleElement() {
     return document.getElementById("productTitle");
   }
 
   function cleanText(text) {
     return text.replace(/\s+/g, " ").trim();
+  }
+
+  // ---------- Price ----------
+  function gatherPrice() {
+    const priceEl =
+      document.querySelector(".a-price .a-offscreen") ||
+      document.querySelector("#priceblock_ourprice") ||
+      document.querySelector("#priceblock_dealprice");
+    return priceEl ? cleanText(priceEl.textContent) : "";
   }
 
   // ---------- Description gathering ----------
@@ -35,12 +52,8 @@
     const titleEl = getTitleElement();
     if (titleEl) parts.push(cleanText(titleEl.textContent));
 
-    // Price (best effort, several possible layouts)
-    const priceEl =
-      document.querySelector(".a-price .a-offscreen") ||
-      document.querySelector("#priceblock_ourprice") ||
-      document.querySelector("#priceblock_dealprice");
-    if (priceEl) parts.push("Price: " + cleanText(priceEl.textContent));
+    const price = gatherPrice();
+    if (price) parts.push("Price: " + price);
 
     // Feature bullets
     const bulletItems = document.querySelectorAll(
@@ -218,6 +231,47 @@
     }
   }
 
+  async function handleEbayClick(button) {
+    const originalHTML = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = `<span class="a2e-spinner"></span>`;
+
+    try {
+      const titleEl = getTitleElement();
+      const title = titleEl ? cleanText(titleEl.textContent) : "";
+      const description = gatherDescription();
+      const price = gatherPrice();
+      const imageUrls = gatherImageUrls();
+
+      chrome.runtime.sendMessage(
+        {
+          type: "PREPARE_EBAY_LISTING",
+          title,
+          description,
+          price,
+          imageUrls,
+        },
+        (response) => {
+          if (response && response.ok) {
+            showToast(
+              button,
+              `Opening eBay — click "Autofill this form" there`
+            );
+          } else {
+            showToast(button, "Couldn't prepare listing — see console", true);
+          }
+          button.disabled = false;
+          button.innerHTML = originalHTML;
+        }
+      );
+    } catch (err) {
+      console.error("Amazon → eBay Lister Helper error:", err);
+      showToast(button, "Something went wrong — see console", true);
+      button.disabled = false;
+      button.innerHTML = originalHTML;
+    }
+  }
+
   function insertButton() {
     const titleEl = getTitleElement();
     if (!titleEl || titleEl.dataset.a2eInjected) return;
@@ -225,18 +279,30 @@
     const wrapper = document.createElement("span");
     wrapper.className = "a2e-wrapper";
 
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "a2e-button";
-    button.title = "Copy description & download photos for eBay";
-    button.innerHTML = CLIPBOARD_SVG;
-    button.addEventListener("click", (e) => {
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "a2e-button";
+    copyButton.title = "Copy description & download photos";
+    copyButton.innerHTML = CLIPBOARD_SVG;
+    copyButton.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      handleClick(button);
+      handleClick(copyButton);
     });
 
-    wrapper.appendChild(button);
+    const ebayButton = document.createElement("button");
+    ebayButton.type = "button";
+    ebayButton.className = "a2e-button a2e-ebay-button";
+    ebayButton.title = "Send title, description & photos to an eBay listing";
+    ebayButton.innerHTML = EBAY_SVG;
+    ebayButton.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      handleEbayClick(ebayButton);
+    });
+
+    wrapper.appendChild(copyButton);
+    wrapper.appendChild(ebayButton);
     titleEl.insertAdjacentElement("afterend", wrapper);
     titleEl.dataset.a2eInjected = "true";
   }

@@ -80,3 +80,114 @@
   opacity: 1;
   transform: translateY(-50%) translateX(0);
 }
+
+.a2e-wrapper .a2e-button + .a2e-button {
+  margin-left: 6px;
+}
+
+.a2e-ebay-button {
+  border-color: #cfe0fb;
+  background: #f2f6ff;
+}
+
+.a2e-ebay-button:hover {
+  background: #e5edff;
+}
+
+.a2e-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(15, 17, 17, 0.25);
+  border-top-color: #0f1111;
+  border-radius: 50%;
+  animation: a2e-spin 0.7s linear infinite;
+}
+
+@keyframes a2e-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- eBay-side autofill panel ---------- */
+
+.a2e-panel {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 280px;
+  background: #fff;
+  border: 1px solid #d5d9d9;
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  color: #0f1111;
+  z-index: 2147483647;
+  overflow: hidden;
+}
+
+.a2e-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #0f1111;
+  color: #fff;
+  padding: 8px 10px;
+  font-weight: 600;
+}
+
+.a2e-panel-close {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.a2e-panel-title {
+  padding: 10px 10px 0;
+  color: #444;
+  line-height: 1.3;
+}
+
+.a2e-panel-fill {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 10px 10px 0;
+  padding: 8px 10px;
+  background: #ff9900;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  color: #111;
+}
+
+.a2e-panel-fill:hover {
+  background: #ffab26;
+}
+
+.a2e-panel-status {
+  padding: 8px 10px 10px;
+}
+
+.a2e-status-row {
+  padding: 2px 0;
+}
+
+.a2e-status-row.a2e-ok {
+  color: #1e7e34;
+}
+
+.a2e-status-row.a2e-fail {
+  color: #b3261e;
+}
+
+.a2e-status-note {
+  margin-top: 6px;
+  color: #666;
+  line-height: 1.35;
+}
