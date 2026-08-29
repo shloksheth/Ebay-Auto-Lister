@@ -1,8 +1,12 @@
-// Amazon → eBay Lister Helper
-// Adds a clipboard button next to the product title. Clicking it:
-//  1. Copies a clean, eBay-ready description to the clipboard.
-//  2. Sends all product photo URLs (full resolution) to the background
-//     script so they can be downloaded to a per-listing folder.
+// Marketplace → eBay Lister Helper (source side)
+// Runs on Amazon, AliExpress, Walmart, and eBay item pages. Adds a
+// clipboard button (copy description + download best-quality photos) and
+// an "eBay" button (hand off title/description/price/photos to a new eBay
+// listing) next to the product title.
+//
+// Each site has different markup, so a small per-site "adapter" supplies
+// the site-specific extraction logic; everything else (button UI, image
+// dedupe, messaging) is shared.
 
 (function () {
   "use strict";
@@ -28,145 +32,411 @@
       <line x1="12" y1="2" x2="12" y2="15"></line>
     </svg>`;
 
-  function getTitleElement() {
-    return document.getElementById("productTitle");
-  }
+  const MAX_IMAGES = 20;
+
+  // ---------- Shared helpers ----------
 
   function cleanText(text) {
-    return text.replace(/\s+/g, " ").trim();
+    return (text || "").replace(/\s+/g, " ").trim();
   }
 
-  // ---------- Price ----------
-  function gatherPrice() {
-    const priceEl =
-      document.querySelector(".a-price .a-offscreen") ||
-      document.querySelector("#priceblock_ourprice") ||
-      document.querySelector("#priceblock_dealprice");
-    return priceEl ? cleanText(priceEl.textContent) : "";
+  function absolutize(url) {
+    if (!url) return url;
+    if (url.startsWith("//")) return "https:" + url;
+    try {
+      return new URL(url, location.href).toString();
+    } catch (e) {
+      return url;
+    }
   }
 
-  // ---------- Description gathering ----------
-  function gatherDescription() {
+  // Reads Schema.org Product JSON-LD, present on most modern e-commerce
+  // sites (Walmart, eBay, and sometimes AliExpress). Used as a fallback /
+  // supplement to per-site DOM scraping.
+  function getJsonLdProduct() {
+    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of scripts) {
+      let data;
+      try {
+        data = JSON.parse(script.textContent);
+      } catch (e) {
+        continue;
+      }
+      const items = Array.isArray(data)
+        ? data
+        : Array.isArray(data["@graph"])
+        ? data["@graph"]
+        : [data];
+      for (const item of items) {
+        const type = item && item["@type"];
+        const isProduct =
+          type === "Product" || (Array.isArray(type) && type.includes("Product"));
+        if (isProduct) return item;
+      }
+    }
+    return null;
+  }
+
+  function jsonLdImages(product) {
+    if (!product || !product.image) return [];
+    const raw = product.image;
+    if (Array.isArray(raw)) return raw.filter((u) => typeof u === "string");
+    if (typeof raw === "string") return [raw];
+    if (raw.url) return [raw.url];
+    return [];
+  }
+
+  function jsonLdPrice(product) {
+    if (!product) return "";
+    const offers = Array.isArray(product.offers) ? product.offers[0] : product.offers;
+    if (!offers) return "";
+    const val = offers.price || offers.lowPrice;
+    return val ? `$${val}` : "";
+  }
+
+  function getOgMeta(prop) {
+    const el = document.querySelector(
+      `meta[property="${prop}"], meta[name="${prop}"]`
+    );
+    return el ? el.getAttribute("content") : "";
+  }
+
+  // Dedupe a list of image URLs. `canonicalize(url)` should return the
+  // best-quality URL for that photo (stripping size/quality suffixes) —
+  // duplicates naturally collapse because they map to the same string.
+  function dedupeImages(rawUrls, canonicalize) {
+    const seen = new Set();
+    const out = [];
+    rawUrls.forEach((raw) => {
+      if (!raw) return;
+      const url = absolutize(raw);
+      const canon = canonicalize ? canonicalize(url) || url : url;
+      if (!seen.has(canon)) {
+        seen.add(canon);
+        out.push(canon);
+      }
+    });
+    return out.slice(0, MAX_IMAGES);
+  }
+
+  function bulletList(selector) {
+    return Array.from(document.querySelectorAll(selector))
+      .map((el) => cleanText(el.textContent))
+      .filter(Boolean);
+  }
+
+  function buildDescriptionText({ title, price, bullets, extra }) {
     const parts = [];
-
-    const titleEl = getTitleElement();
-    if (titleEl) parts.push(cleanText(titleEl.textContent));
-
-    const price = gatherPrice();
+    if (title) parts.push(title);
     if (price) parts.push("Price: " + price);
-
-    // Feature bullets
-    const bulletItems = document.querySelectorAll(
-      "#feature-bullets ul li span.a-list-item"
-    );
-    if (bulletItems.length) {
+    if (bullets && bullets.length) {
       parts.push("\nKey Features:");
-      bulletItems.forEach((li) => {
-        const text = cleanText(li.textContent);
-        if (text && !/warranty|see more/i.test(text)) {
-          parts.push("• " + text);
-        }
-      });
+      bullets.forEach((b) => parts.push("• " + b));
     }
-
-    // Product description (older layout)
-    const descEl = document.querySelector("#productDescription");
-    if (descEl) {
-      const text = cleanText(descEl.textContent);
-      if (text) {
-        parts.push("\nDescription:");
-        parts.push(text);
-      }
+    if (extra) {
+      parts.push("\nDescription:");
+      parts.push(extra);
     }
-
-    // A+ / modern module content (aplus module)
-    const aplus = document.querySelector("#aplus, #aplus_feature_div");
-    if (aplus) {
-      const aplusText = cleanText(aplus.textContent);
-      if (aplusText && aplusText.length > 20) {
-        parts.push("\nAdditional Details:");
-        parts.push(aplusText);
-      }
-    }
-
-    // Product overview table (spec table some listings have)
-    const overviewRows = document.querySelectorAll(
-      "#productOverview_feature_div table tr"
-    );
-    if (overviewRows.length) {
-      parts.push("\nSpecs:");
-      overviewRows.forEach((row) => {
-        const cells = row.querySelectorAll("td, span");
-        const text = cleanText(row.textContent).replace(/\s{2,}/g, " — ");
-        if (text) parts.push("• " + text);
-      });
-    }
-
     return parts.join("\n").trim();
   }
 
-  // ---------- Image gathering ----------
-  function hiResFromThumb(url) {
-    // Amazon thumb/gallery URLs embed size modifiers like:
-    // ..._SX38_SY50_CR,0,0,38,50_.jpg  or  ..._SL1500_.jpg
-    // Stripping the "._..._" segment before the extension yields the
-    // original full-resolution image.
-    return url.replace(/\._[A-Za-z0-9,_]+_(?=\.\w+$)/, "");
+  // ---------- Site adapters ----------
+
+  function amazonCanonicalUrl(url) {
+    // Amazon appends a size/quality token right before the extension, e.g.
+    // ..._SL1500_.jpg or ._AC_SX679_.jpg — stripping it yields the
+    // original full-resolution image, and collapses every size variant of
+    // the same photo down to one identical string.
+    let clean = url.split("?")[0];
+    clean = clean.replace(/\.[A-Za-z0-9,_]*_(?=\.\w+$)/, "");
+    return clean;
   }
 
-  function gatherImageUrls() {
-    const urls = new Set();
-
-    // Main image block thumbnails
-    document
-      .querySelectorAll("#altImages li img, #imageBlock img")
-      .forEach((img) => {
-        const src = img.getAttribute("src");
-        if (src && src.includes("/images/I/")) {
-          urls.add(hiResFromThumb(src));
+  const AmazonAdapter = {
+    id: "amazon",
+    getTitleElement: () => document.getElementById("productTitle"),
+    gatherPrice: () => {
+      const el =
+        document.querySelector(".a-price .a-offscreen") ||
+        document.querySelector("#priceblock_ourprice") ||
+        document.querySelector("#priceblock_dealprice");
+      return el ? cleanText(el.textContent) : "";
+    },
+    gatherDescription: function () {
+      const title = this.getTitleElement()
+        ? cleanText(this.getTitleElement().textContent)
+        : "";
+      const price = this.gatherPrice();
+      const bullets = bulletList("#feature-bullets ul li span.a-list-item").filter(
+        (t) => !/warranty|see more/i.test(t)
+      );
+      const descEl = document.querySelector("#productDescription, #aplus, #aplus_feature_div");
+      const extra = descEl ? cleanText(descEl.textContent) : "";
+      const overviewRows = Array.from(
+        document.querySelectorAll("#productOverview_feature_div table tr")
+      )
+        .map((row) => cleanText(row.textContent).replace(/\s{2,}/g, " — "))
+        .filter(Boolean);
+      let text = buildDescriptionText({ title, price, bullets, extra: extra.slice(0, 1200) });
+      if (overviewRows.length) {
+        text += "\n\nSpecs:\n" + overviewRows.map((r) => "• " + r).join("\n");
+      }
+      return text;
+    },
+    gatherImageUrls: () => {
+      const raw = [];
+      document
+        .querySelectorAll("#altImages li img, #imageBlock img")
+        .forEach((img) => {
+          const src = img.getAttribute("src");
+          if (src && src.includes("/images/I/")) raw.push(src);
+        });
+      const landing = document.getElementById("landingImage");
+      if (landing) {
+        const hires = landing.getAttribute("data-old-hires");
+        if (hires) raw.push(hires);
+        const dynImg = landing.getAttribute("data-a-dynamic-image");
+        if (dynImg) {
+          try {
+            const parsed = JSON.parse(dynImg);
+            Object.keys(parsed).forEach((u) => raw.push(u));
+          } catch (e) {
+            /* ignore */
+          }
+        }
+        const src = landing.getAttribute("src");
+        if (src) raw.push(src);
+      }
+      document.querySelectorAll("script:not([src])").forEach((script) => {
+        const text = script.textContent;
+        if (text && text.includes("colorImages")) {
+          const matches = text.matchAll(/"(hiRes|large)":"(https:\/\/[^"]+)"/g);
+          for (const m of matches) raw.push(m[2].replace(/\\\//g, "/"));
         }
       });
+      return dedupeImages(raw, amazonCanonicalUrl);
+    },
+  };
 
-    // Main landing image, and its high-res data attribute if present
-    const landing = document.getElementById("landingImage");
-    if (landing) {
-      const hires = landing.getAttribute("data-old-hires");
-      if (hires) urls.add(hires);
-      const dynImg = landing.getAttribute("data-a-dynamic-image");
-      if (dynImg) {
-        try {
-          const parsed = JSON.parse(dynImg);
-          Object.keys(parsed).forEach((u) => urls.add(u));
-        } catch (e) {
-          /* ignore parse errors */
-        }
-      }
-      const src = landing.getAttribute("src");
-      if (src) urls.add(hiResFromThumb(src));
+  function walmartCanonicalKey(url) {
+    try {
+      const u = new URL(url);
+      return u.origin + u.pathname;
+    } catch (e) {
+      return url.split("?")[0];
     }
-
-    // Fallback: scan inline scripts for the colorImages / imageGalleryData JSON
-    // Amazon embeds a JS object like: 'colorImages': { 'initial': [ {hiRes:"...", large:"..."} ] }
-    document.querySelectorAll("script:not([src])").forEach((script) => {
-      const text = script.textContent;
-      if (text && text.includes("colorImages")) {
-        const matches = text.matchAll(/"(hiRes|large)":"(https:\/\/[^"]+)"/g);
-        for (const m of matches) {
-          urls.add(m[2].replace(/\\\//g, "/"));
-        }
-      }
-    });
-
-    return Array.from(urls);
   }
 
-  // ---------- UI ----------
+  function walmartUpgrade(url) {
+    try {
+      const u = new URL(url);
+      if (u.searchParams.has("odnWidth")) u.searchParams.set("odnWidth", "2000");
+      if (u.searchParams.has("odnHeight")) u.searchParams.set("odnHeight", "2000");
+      return u.toString();
+    } catch (e) {
+      return url;
+    }
+  }
+
+  const WalmartAdapter = {
+    id: "walmart",
+    getTitleElement: () =>
+      document.querySelector(
+        'h1[itemprop="name"], h1[data-testid="product-title"], main h1'
+      ),
+    gatherPrice: function () {
+      const el = document.querySelector(
+        '[itemprop="price"], [data-testid="price-wrap"] span, [data-automation-id="product-price"]'
+      );
+      if (el) {
+        const val = el.getAttribute("content") || el.textContent;
+        return cleanText(val);
+      }
+      const ld = getJsonLdProduct();
+      return jsonLdPrice(ld);
+    },
+    gatherDescription: function () {
+      const titleEl = this.getTitleElement();
+      const title = titleEl ? cleanText(titleEl.textContent) : "";
+      const price = this.gatherPrice();
+      const bullets = bulletList(
+        '[data-testid="product-highlights"] li, #product-highlights li'
+      );
+      const ld = getJsonLdProduct();
+      const descEl = document.querySelector(
+        '[data-testid="product-description"], [itemprop="description"]'
+      );
+      const extra = descEl
+        ? cleanText(descEl.textContent)
+        : ld && ld.description
+        ? cleanText(ld.description)
+        : cleanText(getOgMeta("og:description"));
+      return buildDescriptionText({ title, price, bullets, extra: extra.slice(0, 1200) });
+    },
+    gatherImageUrls: () => {
+      const raw = [];
+      document
+        .querySelectorAll(
+          'img[data-testid="hero-image"], [data-testid="media-thumbnail"] img, button[data-testid="thumbnail"] img'
+        )
+        .forEach((img) => {
+          const src = img.getAttribute("src") || img.getAttribute("data-src");
+          if (src) raw.push(src);
+        });
+      const ld = getJsonLdProduct();
+      jsonLdImages(ld).forEach((u) => raw.push(u));
+      const seen = new Map();
+      raw.forEach((u) => {
+        const abs = absolutize(u);
+        const key = walmartCanonicalKey(abs);
+        if (!seen.has(key)) seen.set(key, walmartUpgrade(abs));
+      });
+      return Array.from(seen.values()).slice(0, MAX_IMAGES);
+    },
+  };
+
+  function aliexpressCanonicalUrl(url) {
+    // AliExpress appends a size token like _640x640.jpg or _220x220q90.jpg
+    // right before the extension — stripping it yields the original.
+    let clean = url.split("?")[0];
+    clean = clean.replace(/_\d+x\d+[a-z0-9]*(?=\.\w+$)/i, "");
+    return clean;
+  }
+
+  const AliExpressAdapter = {
+    id: "aliexpress",
+    getTitleElement: () =>
+      document.querySelector(
+        'h1[data-pl="product-title"], .product-title-text, h1'
+      ),
+    gatherPrice: function () {
+      const el = document.querySelector(
+        '.product-price-value, [class*="Price_priceText"], .uniform-banner-box-price'
+      );
+      if (el) return cleanText(el.textContent);
+      const ld = getJsonLdProduct();
+      return jsonLdPrice(ld);
+    },
+    gatherDescription: function () {
+      const titleEl = this.getTitleElement();
+      const title = titleEl ? cleanText(titleEl.textContent) : "";
+      const price = this.gatherPrice();
+      const bullets = bulletList(
+        ".product-prop-list li, .specification-list li, [class*='Specification'] li"
+      );
+      const ld = getJsonLdProduct();
+      const extra = (ld && ld.description ? cleanText(ld.description) : cleanText(getOgMeta("og:description"))).slice(
+        0,
+        1200
+      );
+      return buildDescriptionText({ title, price, bullets, extra });
+    },
+    gatherImageUrls: () => {
+      const raw = [];
+      document
+        .querySelectorAll(
+          ".images-view-item img, .image-view img, [class*='slider'] img, [class*='thumb'] img"
+        )
+        .forEach((img) => {
+          const src = img.getAttribute("src") || img.getAttribute("data-src");
+          if (src) raw.push(src);
+        });
+      const ld = getJsonLdProduct();
+      jsonLdImages(ld).forEach((u) => raw.push(u));
+      return dedupeImages(raw, aliexpressCanonicalUrl);
+    },
+  };
+
+  function ebayCanonicalUrl(url) {
+    // eBay image URLs embed a size token like s-l64 / s-l500 — replacing
+    // it with eBay's largest standard size (s-l1600) both upgrades quality
+    // and collapses every size variant of the same photo to one string.
+    let clean = url.split("?")[0];
+    clean = clean.replace(/s-l\d+(?=\.\w+$)/i, "s-l1600");
+    return clean;
+  }
+
+  const EbayItemAdapter = {
+    id: "ebay-item",
+    getTitleElement: () =>
+      document.querySelector(
+        '#itemTitle, h1[itemprop="name"], .x-item-title__mainTitle span, .x-item-title__mainTitle'
+      ),
+    gatherPrice: function () {
+      const el = document.querySelector(
+        '.x-price-primary span, #prcIsum, [itemprop="price"]'
+      );
+      if (el) {
+        const val = el.getAttribute("content") || el.textContent;
+        return cleanText(val);
+      }
+      const ld = getJsonLdProduct();
+      return jsonLdPrice(ld);
+    },
+    gatherDescription: function () {
+      const titleEl = this.getTitleElement();
+      let title = titleEl ? cleanText(titleEl.textContent) : "";
+      title = title.replace(/^details about\s*/i, "");
+      const price = this.gatherPrice();
+      const bullets = bulletList(
+        ".ux-layout-section--features .ux-labels-values__values, .itemAttr td"
+      );
+      let extra = "";
+      const descFrame = document.querySelector("#desc_ifr");
+      if (descFrame) {
+        try {
+          extra = cleanText(descFrame.contentDocument.body.textContent);
+        } catch (e) {
+          /* cross-origin, can't read it */
+        }
+      }
+      if (!extra) {
+        const descDiv = document.querySelector(".x-item-description, #desc_div");
+        if (descDiv) extra = cleanText(descDiv.textContent);
+      }
+      return buildDescriptionText({ title, price, bullets, extra: extra.slice(0, 1200) });
+    },
+    gatherImageUrls: () => {
+      const raw = [];
+      document
+        .querySelectorAll(
+          "#icImg, .ux-image-filmstrip-carousel-item img, #PicturePanel img, .ux-image-carousel-item img"
+        )
+        .forEach((img) => {
+          const src =
+            img.getAttribute("src") ||
+            img.getAttribute("data-src") ||
+            img.getAttribute("data-zoom-src");
+          if (src) raw.push(src);
+        });
+      const ld = getJsonLdProduct();
+      jsonLdImages(ld).forEach((u) => raw.push(u));
+      return dedupeImages(raw, ebayCanonicalUrl);
+    },
+  };
+
+  function detectAdapter() {
+    const host = location.hostname;
+    if (/amazon\./i.test(host)) return AmazonAdapter;
+    if (/walmart\./i.test(host)) return WalmartAdapter;
+    if (/aliexpress\./i.test(host)) return AliExpressAdapter;
+    if (/ebay\./i.test(host)) return EbayItemAdapter;
+    return null;
+  }
+
+  const ADAPTER = detectAdapter();
+  if (!ADAPTER) return;
+
+  // ---------- UI (shared across sites) ----------
+
   function makeSafeFolderName(title) {
-    return (title || "amazon-product")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "")
-      .slice(0, 60) || "amazon-product";
+    return (
+      (title || "product")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "")
+        .slice(0, 60) || "product"
+    );
   }
 
   function showToast(button, message, isError) {
@@ -186,9 +456,9 @@
     button.disabled = true;
 
     try {
-      const description = gatherDescription();
-      const imageUrls = gatherImageUrls();
-      const titleEl = getTitleElement();
+      const description = ADAPTER.gatherDescription();
+      const imageUrls = ADAPTER.gatherImageUrls();
+      const titleEl = ADAPTER.getTitleElement();
       const folder = makeSafeFolderName(titleEl ? titleEl.textContent : "");
 
       await navigator.clipboard.writeText(description);
@@ -198,11 +468,7 @@
 
       if (imageUrls.length) {
         chrome.runtime.sendMessage(
-          {
-            type: "DOWNLOAD_IMAGES",
-            folder,
-            urls: imageUrls,
-          },
+          { type: "DOWNLOAD_IMAGES", folder, urls: imageUrls },
           (response) => {
             const count =
               response && typeof response.count === "number"
@@ -210,9 +476,7 @@
                 : imageUrls.length;
             showToast(
               button,
-              `Description copied · downloading ${count} photo${
-                count === 1 ? "" : "s"
-              }`
+              `Description copied · downloading ${count} photo${count === 1 ? "" : "s"}`
             );
           }
         );
@@ -220,7 +484,7 @@
         showToast(button, "Description copied · no photos found");
       }
     } catch (err) {
-      console.error("Amazon → eBay Lister Helper error:", err);
+      console.error("Marketplace → eBay Lister Helper error:", err);
       showToast(button, "Something went wrong — see console", true);
     } finally {
       setTimeout(() => {
@@ -237,26 +501,17 @@
     button.innerHTML = `<span class="a2e-spinner"></span>`;
 
     try {
-      const titleEl = getTitleElement();
+      const titleEl = ADAPTER.getTitleElement();
       const title = titleEl ? cleanText(titleEl.textContent) : "";
-      const description = gatherDescription();
-      const price = gatherPrice();
-      const imageUrls = gatherImageUrls();
+      const description = ADAPTER.gatherDescription();
+      const price = ADAPTER.gatherPrice();
+      const imageUrls = ADAPTER.gatherImageUrls();
 
       chrome.runtime.sendMessage(
-        {
-          type: "PREPARE_EBAY_LISTING",
-          title,
-          description,
-          price,
-          imageUrls,
-        },
+        { type: "PREPARE_EBAY_LISTING", title, description, price, imageUrls },
         (response) => {
           if (response && response.ok) {
-            showToast(
-              button,
-              `Opening eBay — click "Autofill this form" there`
-            );
+            showToast(button, `Opening eBay — click "Autofill listing details" there`);
           } else {
             showToast(button, "Couldn't prepare listing — see console", true);
           }
@@ -265,7 +520,7 @@
         }
       );
     } catch (err) {
-      console.error("Amazon → eBay Lister Helper error:", err);
+      console.error("Marketplace → eBay Lister Helper error:", err);
       showToast(button, "Something went wrong — see console", true);
       button.disabled = false;
       button.innerHTML = originalHTML;
@@ -273,7 +528,7 @@
   }
 
   function insertButton() {
-    const titleEl = getTitleElement();
+    const titleEl = ADAPTER.getTitleElement();
     if (!titleEl || titleEl.dataset.a2eInjected) return;
 
     const wrapper = document.createElement("span");
@@ -307,8 +562,6 @@
     titleEl.dataset.a2eInjected = "true";
   }
 
-  // Amazon renders the title asynchronously on some page loads, so watch
-  // the DOM until it shows up, then keep watching in case of SPA-style nav.
   const observer = new MutationObserver(() => insertButton());
   observer.observe(document.documentElement, { childList: true, subtree: true });
   insertButton();

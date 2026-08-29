@@ -71,9 +71,11 @@
       ["title", "item.?name", "listing.?title"],
       ["input", "textarea"]
     );
-    if (!el) return false;
-    setNativeValue(el, title.slice(0, 80)); // eBay titles cap at 80 chars
-    return true;
+    if (!el) return { ok: false };
+    const limit = el.maxLength && el.maxLength > 0 ? el.maxLength : 80;
+    const value = title.slice(0, limit);
+    setNativeValue(el, value);
+    return { ok: true, truncated: value.length < title.length, limit };
   }
 
   // ---------- Step 1: eBay's "what are you selling?" search/match step ----------
@@ -121,33 +123,35 @@
 
   function fillSearchBox(title) {
     const el = findListingSearchBox();
-    if (!el) return false;
-    setNativeValue(el, title);
+    if (!el) return { ok: false };
+    const limit = el.maxLength && el.maxLength > 0 ? el.maxLength : title.length;
+    const value = title.slice(0, limit);
+    setNativeValue(el, value);
     el.focus();
-    return true;
+    return { ok: true, truncated: value.length < title.length };
   }
 
   function watchForSearchBox(title, onFilled, timeoutMs) {
-    if (fillSearchBox(title)) {
-      onFilled(true);
+    const immediate = fillSearchBox(title);
+    if (immediate.ok) {
+      onFilled(immediate);
       return;
     }
     const deadline = Date.now() + timeoutMs;
     const observer = new MutationObserver(() => {
-      if (fillSearchBox(title)) {
+      const result = fillSearchBox(title);
+      if (result.ok) {
         observer.disconnect();
-        onFilled(true);
+        onFilled(result);
       } else if (Date.now() > deadline) {
         observer.disconnect();
-        onFilled(false);
+        onFilled(result);
       }
     });
     observer.observe(document.body, { childList: true, subtree: true });
     setTimeout(() => {
       observer.disconnect();
-      if (!document.activeElement || document.activeElement === document.body) {
-        onFilled(fillSearchBox(title));
-      }
+      onFilled(fillSearchBox(title));
     }, timeoutMs);
   }
 
@@ -226,27 +230,80 @@
     });
   }
 
-  function attachPhotos(images) {
-    const fileInput = document.querySelector('input[type="file"]');
-    if (!fileInput || !images.length) return 0;
+  function countPhotoPreviews() {
+    // Uploaded/attached photos are almost always rendered from a local
+    // object URL (blob:) while eBay processes them, so count those as a
+    // reasonable proxy for "did this actually take."
+    return document.querySelectorAll('img[src^="blob:"]').length;
+  }
+
+  function findPhotoInputs() {
+    const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+    // Prefer inputs that look image-related; fall back to any file input.
+    const imageLike = inputs.filter((el) => {
+      const accept = el.getAttribute("accept") || "";
+      const haystack = `${accept} ${el.name} ${el.id}`;
+      return /image|photo|jpg|jpeg|png/i.test(haystack);
+    });
+    return imageLike.length ? imageLike : inputs;
+  }
+
+  function findDropzone() {
+    return document.querySelector(
+      '[class*="upload" i][class*="drop" i], [class*="dropzone" i], [data-testid*="upload" i], [data-testid*="photo" i]'
+    );
+  }
+
+  function attemptAttachPhotos(images) {
+    if (!images.length) return { attempted: false };
 
     const dt = new DataTransfer();
     images.forEach((img, i) => dt.items.add(base64ToFile(img, i)));
-    fileInput.files = dt.files;
-    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
 
-    // Some upload widgets listen for a drop event on a dropzone rather
-    // than a change event on the (often hidden) input — try that too.
-    const dropzone = document.querySelector(
-      '[class*="upload" i][class*="drop" i], [class*="dropzone" i], [data-testid*="upload" i]'
-    );
+    let triedSomething = false;
+
+    findPhotoInputs().forEach((input) => {
+      input.files = dt.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      triedSomething = true;
+    });
+
+    const dropzone = findDropzone();
     if (dropzone) {
       const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
       Object.defineProperty(dropEvent, "dataTransfer", { value: dt });
       dropzone.dispatchEvent(dropEvent);
+      triedSomething = true;
     }
 
-    return dt.files.length;
+    return { attempted: triedSomething };
+  }
+
+  // Fills photos, then actually checks the page a moment later to see if a
+  // preview shows up, instead of just assuming the DOM write worked.
+  function attachPhotosWithVerification(images, onResult) {
+    const before = countPhotoPreviews();
+    const { attempted } = attemptAttachPhotos(images);
+
+    if (!attempted) {
+      onResult({ ok: false, reason: "no-target" });
+      return;
+    }
+
+    let checks = 0;
+    const maxChecks = 8; // ~4s at 500ms
+    const interval = setInterval(() => {
+      checks += 1;
+      const after = countPhotoPreviews();
+      if (after > before) {
+        clearInterval(interval);
+        onResult({ ok: true, count: after - before });
+      } else if (checks >= maxChecks) {
+        clearInterval(interval);
+        onResult({ ok: false, reason: "no-preview" });
+      }
+    }, 500);
   }
 
   // ---------- Panel UI ----------
@@ -284,12 +341,13 @@
     const searchStatus = panel.querySelector(".a2e-step-status");
     watchForSearchBox(
       listing.title,
-      (found) => {
+      (result) => {
         searchStatus.classList.remove("a2e-step-pending");
-        if (found) {
+        if (result.ok) {
           searchStatus.classList.add("a2e-ok");
-          searchStatus.textContent =
-            "✓ Typed the title in — check the match eBay suggests, then continue.";
+          searchStatus.textContent = result.truncated
+            ? "✓ Typed in a shortened title (eBay's field has a character limit). Check the match eBay suggests, then continue."
+            : "✓ Typed the title in — check the match eBay suggests, then continue.";
         } else {
           searchStatus.classList.add("a2e-fail");
           searchStatus.textContent =
@@ -303,31 +361,52 @@
       const status = panel.querySelector(".a2e-panel-status");
       const results = [];
 
-      results.push(["Title", fillTitle(listing.title)]);
+      const titleResult = fillTitle(listing.title);
+      results.push([
+        titleResult.ok && titleResult.truncated
+          ? `Title (shortened to eBay's ${titleResult.limit}-char limit)`
+          : "Title",
+        titleResult.ok,
+      ]);
       results.push(["Description", fillDescription(listing.description)]);
       results.push(["Price", fillPrice(listing.price)]);
-      const attached = attachPhotos(listing.images);
-      results.push([
-        `Photos (${attached}/${listing.images.length})`,
-        attached > 0,
-      ]);
 
-      status.innerHTML = results
-        .map(
-          ([label, ok]) =>
-            `<div class="a2e-status-row ${ok ? "a2e-ok" : "a2e-fail"}">${
-              ok ? "✓" : "✗"
-            } ${label}</div>`
-        )
-        .join("");
+      status.innerHTML =
+        results
+          .map(
+            ([label, ok]) =>
+              `<div class="a2e-status-row ${ok ? "a2e-ok" : "a2e-fail"}">${
+                ok ? "✓" : "✗"
+              } ${label}</div>`
+          )
+          .join("") +
+        `<div class="a2e-status-row a2e-step-pending" data-role="photos">… Photos (checking)</div>`;
 
-      const anyFailed = results.some(([, ok]) => !ok);
-      const note = document.createElement("div");
-      note.className = "a2e-status-note";
-      note.textContent = anyFailed
-        ? "Some fields weren't found on this page yet — if you're not on the listing-details step yet, finish picking a match/category first, then click this again. Otherwise fill those in manually."
-        : "Double-check everything, then publish on eBay when ready.";
-      status.appendChild(note);
+      const photoRow = status.querySelector('[data-role="photos"]');
+      attachPhotosWithVerification(listing.images, (result) => {
+        photoRow.classList.remove("a2e-step-pending");
+        if (result.ok) {
+          photoRow.classList.add("a2e-ok");
+          photoRow.textContent = `✓ Photos (${result.count} of ${listing.images.length} confirmed on the page)`;
+        } else if (result.reason === "no-target") {
+          photoRow.classList.add("a2e-fail");
+          photoRow.textContent =
+            "✗ Photos — no upload field found on this page yet";
+        } else {
+          photoRow.classList.add("a2e-fail");
+          photoRow.textContent =
+            "✗ Photos — attached, but no preview appeared. Check the page, or drag them in manually.";
+        }
+
+        const anyFailed =
+          results.some(([, ok]) => !ok) || !result.ok;
+        const note = document.createElement("div");
+        note.className = "a2e-status-note";
+        note.textContent = anyFailed
+          ? "Some fields weren't found on this page yet — if you're not on the listing-details step yet, finish picking a match/category first, then click this again. Otherwise fill those in manually."
+          : "Double-check everything, then publish on eBay when ready.";
+        status.appendChild(note);
+      });
     });
   }
 

@@ -1,11 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "Amazon → eBay Lister Helper",
-  "version": "1.2.0",
-  "description": "Adds buttons next to the Amazon product title to copy/download listing info, and to auto-fill that title, description, price, and photos into an open eBay listing form.",
+  "name": "Marketplace → eBay Lister Helper",
+  "version": "2.0.0",
+  "description": "Adds buttons next to the product title on Amazon, Walmart, AliExpress, and eBay listings to copy/download best-quality photos, and to auto-fill title, description, price, and photos into a new eBay listing.",
   "permissions": ["downloads", "activeTab", "scripting", "storage", "unlimitedStorage"],
   "host_permissions": [
     "*://*.amazon.com/*",
+    "*://*.walmart.com/*",
+    "*://*.aliexpress.com/*",
     "*://*.ebay.com/*"
   ],
   "background": {
@@ -13,13 +15,18 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*.amazon.com/*"],
+      "matches": [
+        "*://*.amazon.com/*",
+        "*://*.walmart.com/*",
+        "*://*.aliexpress.com/*",
+        "*://*.ebay.com/itm/*"
+      ],
       "js": ["content.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
     },
     {
-      "matches": ["*://*.ebay.com/*"],
+      "matches": ["*://*.ebay.com/sl/*"],
       "js": ["ebay-content.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
