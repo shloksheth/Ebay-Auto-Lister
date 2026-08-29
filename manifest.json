@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Amazon → eBay Lister Helper",
+  "version": "1.0.0",
+  "description": "Adds a button next to the Amazon product title. Click it to copy the product description and download all product photos, ready to paste/upload into an eBay listing.",
+  "permissions": ["downloads", "activeTab", "scripting"],
+  "host_permissions": [
+    "*://*.amazon.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.amazon.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

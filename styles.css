@@ -1,0 +1,82 @@
+.a2e-wrapper {
+  position: relative;
+  display: inline-block;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+.a2e-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid #d5d9d9;
+  background: #f7f8fa;
+  color: #0f1111;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  transition: background 0.15s ease, transform 0.1s ease, color 0.15s ease;
+}
+
+.a2e-button:hover {
+  background: #eef1f1;
+}
+
+.a2e-button:active {
+  transform: scale(0.94);
+}
+
+.a2e-button:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.a2e-button.a2e-success {
+  background: #e6f4ea;
+  border-color: #34a853;
+  color: #1e7e34;
+}
+
+.a2e-toast {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 10px);
+  transform: translateY(-50%) translateX(-6px);
+  white-space: nowrap;
+  background: #0f1111;
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.2;
+  padding: 6px 10px;
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 9999;
+}
+
+.a2e-toast::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 100%;
+  transform: translateY(-50%);
+  border: 5px solid transparent;
+  border-right-color: #0f1111;
+}
+
+.a2e-toast-error {
+  background: #b3261e;
+}
+
+.a2e-toast-error::before {
+  border-right-color: #b3261e;
+}
+
+.a2e-toast-visible {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
