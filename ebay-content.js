@@ -20,6 +20,14 @@
     formDetectedAt: 0,
     descriptionSeeded: false,
     specificsDone: false,
+    variationsDone: false,
+    variationStarted: false,
+    variationSaveClicked: false,
+    variationAttributesAdded: new Set(),
+    variationValuesAdded: new Set(),
+    variationRowsFilled: new Set(),
+    variationImagesUploaded: new Set(),
+    variationNextAt: 0,
     nextSpecificAt: 0,
     specificAttempts: new Map(),
     intervalId: null,
@@ -348,7 +356,7 @@
   }
 
   async function fillSpecifics(specifics) {
-    const priority = ["Brand", "Type", "Model", "Tracking Method", "Connectivity", "Features", "Color", "Number of Buttons", "Maximum DPI", "MPN", "Item Height", "Item Width", "Item Length", "Unit Quantity", "Unit Type", "Country of Origin", "Charger Included"];
+    const priority = ["Type", "Brand", "Mounting Location", "Compatible Brand", "Compatible Model", "Mounting Type", "Features", "Color", "Items Included", "Fastening", "Model", "Tracking Method", "Connectivity", "Number of Buttons", "Maximum DPI", "MPN", "Item Height", "Item Width", "Item Length", "Unit Quantity", "Unit Type", "Country of Origin", "Charger Included"];
     const source = Core.deriveEbaySpecifics(specifics, { specifics });
     const keys = [...priority, ...Object.keys(source)];
     const entries = [];
@@ -470,6 +478,166 @@
     return false;
   }
 
+  function variationScope() {
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')).filter(visible);
+    return dialogs.find((dialog) => /\bvariations?\b/i.test(dialog.textContent || "")) ||
+      Array.from(document.querySelectorAll("main, section, form")).filter(visible).find((element) => /\b(?:edit|create|manage) variations?\b/i.test(element.textContent || "")) || null;
+  }
+
+  function scopedButtons(scope) {
+    return Array.from((scope || document).querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]'))
+      .filter((element) => visible(element) && !element.disabled && !element.closest("#a2e-ebay-panel"));
+  }
+
+  function controlLabel(control) {
+    return Core.cleanText(control.getAttribute("aria-label") || (control.labels ? Array.from(control.labels).map((label) => label.textContent).join(" ") : "") || control.closest("label")?.textContent || control.parentElement?.textContent || control.textContent);
+  }
+
+  function variationRow(scope, variation) {
+    const values = Object.values(variation.attributes).map(normalized);
+    return Array.from((scope || document).querySelectorAll('tr, [role="row"], [data-testid*="variation" i], [class*="variation" i]'))
+      .filter(visible)
+      .find((row) => values.every((value) => normalized(row.textContent).includes(value))) || null;
+  }
+
+  function variationInput(row, kind) {
+    const patterns = kind === "price" ? /price|amount/ : /quantity|available|inventory|qty/;
+    return Array.from(row?.querySelectorAll("input") || []).find((input) => visible(input) && !input.disabled && patterns.test(describe(input) + " " + normalized(controlLabel(input)))) || null;
+  }
+
+  function uploadOneVariationPhoto(input, variation) {
+    if (!input || !variation.images?.length) return false;
+    const transfer = new DataTransfer();
+    transfer.items.add(dataUrlToFile(variation.images[0], 0));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return input.files.length === 1;
+  }
+
+  async function fillVariations(listing) {
+    if (!listing.variations?.length || listing.variations.length < 2) {
+      state.variationsDone = true;
+      return { done: true, detail: "Single item" };
+    }
+    if (state.variationsDone) return { done: true, detail: `${listing.variations.length} variations saved` };
+    if (Date.now() < state.variationNextAt) return { done: false, detail: "Waiting for eBay’s variation editor" };
+    const wait = (milliseconds) => { state.variationNextAt = Date.now() + milliseconds; };
+    let scope = variationScope();
+    if (state.variationSaveClicked) {
+      const stillEditing = scope && scopedButtons(scope).some((button) => /^(?:save and close|save & close|save variations?|done)$/.test(buttonText(button)));
+      if (!stillEditing) {
+        state.variationsDone = true;
+        return { done: true, detail: `${listing.variations.length} variations saved` };
+      }
+    }
+
+    if (!state.variationStarted) {
+      const open = buttons().find((button) => {
+        const identity = `${buttonText(button)} ${normalized(button.getAttribute("aria-label"))}`;
+        return /\b(?:edit|create|add|manage) variations?\b/.test(identity) || /^variations?$/.test(identity);
+      });
+      if (!open) return { done: false, detail: "Waiting for Edit variations" };
+      open.click();
+      state.variationStarted = true;
+      wait(1000);
+      return { done: false, detail: "Opened variation editor" };
+    }
+
+    scope = scope || document;
+    const attributeNames = listing.variationAttributes || Core.uniqueStrings(listing.variations.flatMap((variation) => Object.keys(variation.attributes)));
+    for (const name of attributeNames) {
+      if (state.variationAttributesAdded.has(name)) continue;
+      const controls = Array.from(scope.querySelectorAll('input[type="checkbox"], input[type="radio"], button, [role="option"], [role="menuitemcheckbox"]')).filter(visible);
+      const existing = controls.find((control) => normalized(controlLabel(control)) === normalized(name) || normalized(controlLabel(control)).startsWith(`${normalized(name)} `));
+      if (existing) {
+        if (!(existing instanceof HTMLInputElement) || !existing.checked) existing.click();
+        state.variationAttributesAdded.add(name);
+        wait(650);
+        return { done: false, detail: `Selected variation attribute ${name}` };
+      }
+      const nameInput = Array.from(scope.querySelectorAll("input")).filter(visible).find((input) => /attribute.*name|variation.*name|add.*detail|enter.*attribute/.test(describe(input)));
+      if (nameInput && setValue(nameInput, name)) {
+        pressEnter(nameInput);
+        state.variationAttributesAdded.add(name);
+        wait(700);
+        return { done: false, detail: `Added variation attribute ${name}` };
+      }
+    }
+
+    for (const name of attributeNames) {
+      const values = Core.uniqueStrings(listing.variations.map((variation) => variation.attributes[name]).filter(Boolean));
+      for (const value of values) {
+        const key = `${name}:${value}`;
+        if (state.variationValuesAdded.has(key)) continue;
+        const controls = Array.from(scope.querySelectorAll('input[type="checkbox"], input[type="radio"], button, [role="option"], [role="menuitemcheckbox"]')).filter(visible);
+        const existing = controls.find((control) => normalized(controlLabel(control)) === normalized(value));
+        if (existing) {
+          if (!(existing instanceof HTMLInputElement) || !existing.checked) existing.click();
+          state.variationValuesAdded.add(key);
+          wait(500);
+          return { done: false, detail: `Selected ${name}: ${value}` };
+        }
+        const valueInput = Array.from(scope.querySelectorAll("input")).filter(visible).find((input) => /variation.*value|option.*value|enter.*(?:value|option)|add.*(?:value|option)/.test(describe(input)));
+        if (valueInput && setValue(valueInput, value)) {
+          pressEnter(valueInput);
+          state.variationValuesAdded.add(key);
+          wait(600);
+          return { done: false, detail: `Added ${name}: ${value}` };
+        }
+        // Values may not be requested until the next screen.
+        break;
+      }
+    }
+
+    const rowsPresent = listing.variations.some((variation) => variationRow(scope, variation));
+    if (!rowsPresent) {
+      const proceed = scopedButtons(scope).find((button) => /^(?:continue|next|create variations?)$/.test(buttonText(button)));
+      if (proceed) {
+        proceed.click();
+        wait(1000);
+        return { done: false, detail: "Created variation combinations" };
+      }
+    }
+
+    for (const variation of listing.variations) {
+      const row = variationRow(scope, variation);
+      if (!row) continue;
+      if (!state.variationRowsFilled.has(variation.id)) {
+        const price = variationInput(row, "price");
+        const quantity = variationInput(row, "quantity");
+        const priceOk = !price || setValue(price, variation.price);
+        const quantityOk = !quantity || setValue(quantity, String(variation.quantity || 11));
+        if (price && quantity && priceOk && quantityOk) state.variationRowsFilled.add(variation.id);
+        wait(500);
+        return { done: false, detail: `Set ${Object.values(variation.attributes).join(" / ")} to $${variation.price}, quantity 11` };
+      }
+      if (!state.variationImagesUploaded.has(variation.id)) {
+        const input = Array.from(row.querySelectorAll('input[type="file"]')).find((element) => /image|photo|jpg|jpeg|png/i.test(`${element.accept} ${element.id} ${element.name}`)) ||
+          Array.from(scope.querySelectorAll('input[type="file"]')).filter((element) => visible(element) || element.offsetParent).find((element) => normalized(element.closest("section,div")?.textContent).includes(normalized(Object.values(variation.attributes)[0])));
+        if (input && uploadOneVariationPhoto(input, variation)) {
+          state.variationImagesUploaded.add(variation.id);
+          wait(1200);
+          return { done: false, detail: `Uploaded photo for ${Object.values(variation.attributes).join(" / ")}` };
+        }
+        // Some categories use the main photo set and expose no per-row uploader.
+        if (!scope.querySelector('input[type="file"]')) state.variationImagesUploaded.add(variation.id);
+      }
+    }
+
+    const rowsComplete = listing.variations.every((variation) => state.variationRowsFilled.has(variation.id));
+    const photosComplete = listing.variations.every((variation) => state.variationImagesUploaded.has(variation.id));
+    if (rowsComplete && photosComplete) {
+      const save = scopedButtons(scope).find((button) => /^(?:save and close|save & close|save variations?|done)$/.test(buttonText(button)));
+      if (save) {
+        save.click();
+        state.variationSaveClicked = true;
+        wait(1200);
+        return { done: false, detail: "Saving variations" };
+      }
+    }
+    return { done: false, detail: `Variation rows ${state.variationRowsFilled.size}/${listing.variations.length}; photos ${state.variationImagesUploaded.size}/${listing.variations.length}` };
+  }
+
   function dataUrlToFile(image, index) {
     const comma = image.dataUrl.indexOf(",");
     const header = image.dataUrl.slice(0, comma);
@@ -544,10 +712,16 @@
     const descriptionReady = state.filled.has("description");
     return state.filled.has("title") && descriptionReady && state.filled.has("price") &&
       state.filled.has("quantity") && state.filled.has("condition") && state.filled.has("shipping") && state.uploadConfirmed &&
-      state.specificsDone && (state.specificTotal === 0 || state.filled.has("specifics"));
+      state.specificsDone && (state.specificTotal === 0 || state.filled.has("specifics")) && (!listing.variations?.length || state.variationsDone);
   }
 
   async function fillForm(listing) {
+    if (listing.variations?.length && state.variationStarted && !state.variationsDone) {
+      const variationResult = await fillVariations(listing);
+      setStatus("variations", variationResult.done, variationResult.detail);
+      if (variationResult.done) state.filled.add("variations");
+      return true;
+    }
     const title = titleField();
     const price = priceField();
     if (!title && !price) return false;
@@ -571,6 +745,16 @@
     }
     if (!state.filled.has("condition") && fillCondition()) state.filled.add("condition");
     if (!state.filled.has("shipping") && (!listing.settings.freeShipping || enableFreeShipping())) state.filled.add("shipping");
+
+    if (listing.variations?.length && !state.variationsDone && state.specificsDone) {
+      const variationResult = await fillVariations(listing);
+      setStatus("variations", variationResult.done, variationResult.detail);
+      if (!variationResult.done) return true;
+      state.filled.add("variations");
+    } else if (!listing.variations?.length) {
+      state.variationsDone = true;
+      setStatus("variations", true, "No variations detected");
+    }
 
     setStatus("title", state.filled.has("title"), "Title");
     setStatus("description", state.filled.has("description"), `${listing.generator || "Premium"} description (editable)`);
@@ -610,6 +794,7 @@
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="price">… Price</div>
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="quantity">… Quantity 11</div>
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="specifics">… Item specifics</div>
+        <div class="a2e-status-row a2e-step-pending" data-a2e-status="variations">… Variations</div>
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="shipping">… Free shipping</div>
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="photos">… Photos</div>
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="publish">… Final submission</div>

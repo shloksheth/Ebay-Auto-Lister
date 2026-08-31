@@ -135,7 +135,7 @@
     set("Features", findSpecific(raw, ["Features", "Special Feature", "Special Features"]));
     set("Type", findSpecific(raw, ["Type", "Item Type Name", "Product Type"]));
 
-    const searchable = cleanText([product?.title, product?.description, ...(product?.bullets || [])].join(" "));
+    const searchable = cleanText([product?.title, product?.description, ...(product?.bullets || []), ...Object.values(raw)].join(" "));
     const dimensionsEntry = Object.entries(raw).find(([key, value]) => !/package/i.test(key) && /(?:product|item)?\s*dimensions?/i.test(key) && /\d\s*[x×]\s*\d/i.test(value));
     if (dimensionsEntry) {
       const match = dimensionsEntry[1].match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(inches?|in\.?|cm|mm)?/i);
@@ -160,6 +160,28 @@
     }
     if (/\bcharger included\b|\bincludes? (?:a )?(?:usb )?(?:charging cable|charger)\b/i.test(searchable)) set("Charger Included", "Yes");
     else if (/\bcharger not included\b|\bdoes not include (?:a )?charger\b/i.test(searchable)) set("Charger Included", "No");
+
+    if (productKind(product?.title) === "car phone mount") {
+      output.Type = "Car Mount/Holder";
+      if (/\b(?:dashboard|dash)\b/i.test(searchable) && /\b(?:air )?vent\b/i.test(searchable)) output["Mounting Location"] = "Dashboard, Air Vent";
+      else if (/\b(?:dashboard|dash)\b/i.test(searchable)) output["Mounting Location"] = "Dashboard";
+      else if (/\b(?:air )?vent\b/i.test(searchable)) output["Mounting Location"] = "Air Vent";
+      if (/\bmagnet(?:ic|s)?\b|\bmagsafe\b/i.test(searchable)) output["Mounting Type"] = "Magnet";
+      if (/\biphone\b|\bmagsafe\b/i.test(searchable)) {
+        output["Compatible Brand"] = "Apple";
+        output["Compatible Model"] = "Universal";
+      }
+      const mountFeatures = [];
+      if (/\b360\s*°|360\s*(?:degree|rotation)/i.test(searchable)) mountFeatures.push("360° Rotation");
+      if (/\badjustable|swivel|viewing angle/i.test(searchable)) mountFeatures.push("Adjustable Angle");
+      if (/\bmagnet(?:ic|s)?\b|\bmagsafe\b/i.test(searchable)) mountFeatures.push("Magnetic");
+      if (/\bhands?[- ]free\b/i.test(searchable)) mountFeatures.push("Hands Free");
+      if (mountFeatures.length) output.Features = uniqueStrings(mountFeatures).join(", ");
+      output["Items Included"] = /\bmetal rings? (?:are )?(?:provided|included)\b/i.test(searchable) ? "Car Mount, Metal Rings" : "Car Mount";
+      if (/\b(?:adhesive|vhb|stick force)\b/i.test(searchable)) output.Fastening = "Adhesive";
+      const variantColor = findSpecific(product?.variantAttributes, ["Color", "Colour"]);
+      if (variantColor) output.Color = variantColor;
+    }
 
     // eBay commonly requires Brand even when the source marketplace does not
     // expose one. "Unbranded" is eBay's accepted non-invented value.
@@ -216,8 +238,28 @@
       .replace(/[【】]/g, " ")
       .replace(/\s*\|\s*/g, ", ")
       .replace(/\bMouses\b/gi, "Mouse");
-    const brand = specifics.Brand || "";
+    const brand = /^unbranded$/i.test(specifics.Brand || "") ? "" : specifics.Brand || "";
     const isComputer = /\b(?:gaming\s+pc|desktop\s+(?:pc|computer)|computer\s+tower|mini\s+pc|workstation)\b/i.test(original);
+
+    if (/\b(?:car|dashboard|dash)\b/i.test(original) && /\b(?:phone holder|car mount|phone mount)\b/i.test(original)) {
+      const parts = [];
+      if (/\biphone\b/i.test(original)) parts.push("iPhone");
+      if (/\bmagsafe\b/i.test(original)) parts.push("MagSafe");
+      parts.push("Car Mount");
+      const magnetCount = original.match(/\b(\d{1,3})\s+(?:strong\s+)?magnets?\b/i);
+      if (magnetCount) parts.push(`${magnetCount[1]} Magnets`);
+      const rotation = original.match(/\b(\d{2,3})\s*°(?:\s*rotation)?/i);
+      if (rotation) parts.push(`${rotation[1]}°`);
+      if (/\b(?:phone holder|magnetic holder)\b/i.test(original)) parts.push("Holder");
+      const compatibility = original.match(/\b(?:fits?|compatible(?:\s+with)?)\b[^\n]{0,55}?\biphone\s+((?:\d{2}\s*){2,})/i);
+      if (compatibility) {
+        const models = uniqueStrings(compatibility[1].match(/\d{2}/g) || []);
+        if (models.length) parts.push(`Fits ${models.join(" ")}`);
+      }
+      const variants = ["Pro", "Max", "Plus"].filter((name) => new RegExp(`\\b${name}\\b`, "i").test(original));
+      if (variants.length) parts.push(variants.join(" "));
+      return shortenTitle(parts.join(" "), max);
+    }
 
     if (/\bmouse\b/i.test(original) && !isComputer) {
       const parts = [brand];
@@ -256,6 +298,7 @@
       ["printer", /\b(?:printer|all-in-one printer)\b/],
       ["watch", /\b(?:smartwatch|wristwatch|automatic watch|quartz watch)\b/],
       ["ring", /\b(?:smart ring|sizing ring|ring sizing kit)\b/],
+      ["car phone mount", /\b(?=[^\n]*(?:car|dashboard|dash))(?=[^\n]*(?:phone holder|phone mount|car mount))[^\n]+\b/],
       ["keyboard", /\bkeyboard\b/],
       ["mouse", /\bmouse\b/],
     ];
@@ -278,6 +321,7 @@
       printer: /\bprinter\b/,
       watch: /\b(?:watch|smartwatch)\b/,
       ring: /\bring\b/,
+      "car phone mount": /\b(?:mount|holder)\b/,
       keyboard: /\bkeyboard\b/,
       mouse: /\bmouse\b/,
     };
@@ -299,7 +343,14 @@
     const allowed = new Set(meaningful([source, ...Object.values(facts)].join(" ")));
     const proposedTokens = meaningful(proposed);
     const supported = proposedTokens.length > 0 && proposedTokens.every((token) => allowed.has(token));
-    let title = proposed && supported && titlePreservesProductIdentity(source, proposed, facts) ? proposed : local;
+    const score = (candidate) => {
+      const stop = new Set(["for", "the", "and", "with", "from", "this", "that", "car", "phone"]);
+      const sourceTokens = uniqueStrings(normalizedTitleTokens(source).filter((token) => (token.length > 2 || /^\d+$/.test(token)) && !stop.has(token)));
+      const candidateTokens = new Set(normalizedTitleTokens(candidate));
+      return sourceTokens.reduce((total, token) => total + (candidateTokens.has(token) ? (/^\d+$/.test(token) ? 3 : 1) : 0), 0);
+    };
+    const proposedIsSafe = proposed && supported && titlePreservesProductIdentity(source, proposed, facts);
+    let title = proposedIsSafe && score(proposed) > score(local) ? proposed : local;
 
     if (title.length < min) {
       const additions = [facts.Brand, facts.Model, facts.Type, facts.Color, facts.Size, facts.Connectivity]
@@ -336,7 +387,9 @@
   }
 
   function buildPremiumDescription(product) {
-    const title = createPremiumTitle(product, 80);
+    const title = product?.listingTitle
+      ? shortenTitle(product.listingTitle, 80)
+      : createPremiumTitle(product, 80);
     const specifics = deriveEbaySpecifics(product?.specifics, product);
     const description = marketplaceSafeText(product?.aiOverview || product?.aiDescription || product?.description);
     const sourceBullets = Array.isArray(product?.aiFeatures) && product.aiFeatures.length ? product.aiFeatures : product?.bullets || [];

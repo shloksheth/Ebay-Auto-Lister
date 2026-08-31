@@ -139,3 +139,42 @@ test("final title stays source-backed and targets 75-80 characters when facts al
   assert.equal(Core.titlePreservesProductIdentity(source, title, { Brand: "AULA" }), true);
   assert.match(title, /Desktop|PC|Computer/i);
 });
+
+test("long marketplace titles are rewritten by keyword value instead of cut off", () => {
+  const source = "for iPhone Magsafe car Mount【20 Strong Magnets】Magnetic Phone Holder for Car Dashboard【360° Rotation】Hands Free Car Phone Holder Mount Dash Fit iPhone 15 14 13 12 Pro Max Plus MagSafe Car Accessories";
+  const weak = "for iPhone Magsafe car Mount 20 Strong Magnets Magnetic Phone Holder for Car";
+  const title = Core.finalizeEbayTitle(source, weak, {}, 75, 80);
+  assert.equal(title, "iPhone MagSafe Car Mount 20 Magnets 360° Holder Fits 15 14 13 12 Pro Max Plus");
+  assert.ok(title.length >= 75 && title.length <= 80);
+  assert.doesNotMatch(title, /^for\b/i);
+});
+
+test("premium description keeps the final optimized listing title as its heading", () => {
+  const listingTitle = "iPhone MagSafe Car Mount 20 Magnets 360° Holder Fits 15 14 13 12 Pro Max Plus";
+  const description = Core.buildPremiumDescription({
+    title: "long repeated marketplace source title",
+    listingTitle,
+    description: "A magnetic dashboard mount with adjustable rotation.",
+    bullets: ["Strong magnetic hold", "Adjustable viewing angle"],
+    specifics: { Brand: "Unbranded", Color: "Black" },
+  });
+  assert.equal(description.split("\n")[0], listingTitle);
+});
+
+test("car mount facts map to eBay's phone-holder item specifics", () => {
+  const specifics = Core.deriveEbaySpecifics({ Brand: "Kaistyle", Color: "Black", "Mounting Type": "Dashboard & Vent" }, {
+    title: "iPhone MagSafe Car Mount 20 Magnets 360° Holder Fits 15 14 13 12 Pro Max Plus",
+    bullets: ["VHB adhesive provides strong stick force", "Adjustable swivel ball joint for 360° rotation", "Metal rings are provided", "Hands-free magnetic holder"],
+    variantAttributes: { Color: "Black" },
+  });
+  assert.equal(specifics.Type, "Car Mount/Holder");
+  assert.equal(specifics.Brand, "Kaistyle");
+  assert.equal(specifics["Mounting Location"], "Dashboard, Air Vent");
+  assert.equal(specifics["Mounting Type"], "Magnet");
+  assert.equal(specifics["Compatible Brand"], "Apple");
+  assert.equal(specifics["Compatible Model"], "Universal");
+  assert.equal(specifics.Color, "Black");
+  assert.equal(specifics.Fastening, "Adhesive");
+  assert.match(specifics.Features, /360° Rotation/);
+  assert.equal(specifics["Items Included"], "Car Mount, Metal Rings");
+});

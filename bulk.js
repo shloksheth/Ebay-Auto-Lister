@@ -72,7 +72,7 @@ async function importProducts() {
   elements.import.disabled = true;
   elements.send.disabled = true;
   const seen = new Set(state.items.map((item) => productKey(item.product.sourceUrl)));
-  const queue = initialLinks.map((url) => ({ url, groupId: crypto.randomUUID(), variantLabel: "" }));
+  const queue = initialLinks.map((url) => ({ url, groupId: crypto.randomUUID(), variantLabel: "", variantAttributes: {} }));
   let processed = 0;
   while (queue.length && processed < 150) {
     const task = queue.shift();
@@ -84,10 +84,12 @@ async function importProducts() {
     try {
       const response = await sendMessage({ type: "EXTRACT_PRODUCT_URL", url: task.url });
       if (!response?.ok) throw new Error(response?.error || "Import failed");
-      const item = { id: crypto.randomUUID(), groupId: task.groupId, variantLabel: task.variantLabel, product: response.product, selected: true, status: "Ready" };
+      response.product.variantAttributes = { ...task.variantAttributes, ...(response.product.variantAttributes || {}) };
+      const detectedLabel = Object.entries(response.product.variantAttributes).map(([name, value]) => `${name}: ${value}`).join(" · ");
+      const item = { id: crypto.randomUUID(), groupId: task.groupId, variantLabel: detectedLabel || task.variantLabel, product: response.product, selected: true, status: "Ready" };
       state.items.push(item);
       for (const variant of response.product.variants || []) {
-        if (!seen.has(productKey(variant.url))) queue.push({ url: variant.url, groupId: task.groupId, variantLabel: `${variant.dimension}: ${variant.label}` });
+        if (!seen.has(productKey(variant.url))) queue.push({ url: variant.url, groupId: task.groupId, variantLabel: `${variant.dimension}: ${variant.label}`, variantAttributes: variant.attributes || { [variant.dimension || "Variation"]: variant.label } });
       }
       render();
       await persist();
@@ -109,18 +111,19 @@ async function sendSelectedToEbay() {
   if (!selected.length) return;
   state.sending = true;
   elements.send.disabled = true;
-  for (let index = 0; index < selected.length; index += 1) {
-    const item = selected[index];
-    item.status = `Preparing ${index + 1}/${selected.length}`;
+  const groups = Array.from(new Map(selected.map((item) => [item.groupId, selected.filter((candidate) => candidate.groupId === item.groupId)])).values());
+  for (let index = 0; index < groups.length; index += 1) {
+    const group = groups[index];
+    group.forEach((item) => { item.status = `Preparing group ${index + 1}/${groups.length}`; });
     render();
     try {
-      const response = await sendMessage({ type: "PREPARE_EBAY_LISTING", product: item.product });
+      const response = group.length > 1
+        ? await sendMessage({ type: "PREPARE_EBAY_VARIATION_LISTING", products: group.map((item) => item.product) })
+        : await sendMessage({ type: "PREPARE_EBAY_LISTING", product: group[0].product });
       if (!response?.ok) throw new Error(response?.error || "Could not create eBay listing");
-      item.status = "Opened in eBay";
-      item.selected = false;
+      group.forEach((item) => { item.status = response.variationCount ? `Opened as ${response.variationCount}-variation listing` : "Opened in eBay"; item.selected = false; });
     } catch (error) {
-      item.status = error.message || "eBay preparation failed";
-      item.statusType = "error";
+      group.forEach((item) => { item.status = error.message || "eBay preparation failed"; item.statusType = "error"; });
     }
     render();
     await persist();

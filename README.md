@@ -1,4 +1,4 @@
-# M Dropshipping Bulk Import 4.1.0
+# M Dropshipping Bulk Import 4.3.1
 
 This Chrome extension reads a product page, prepares a structured eBay listing,
 opens eBay's seller flow, and automatically advances through the forms it can
@@ -20,6 +20,37 @@ one item cannot overwrite another. Imported products remain saved locally in
 the dashboard until cleared. A 150-product import safety limit prevents a bad
 variant graph from creating an unbounded queue.
 
+## What changed in 4.2
+
+- Clicking Upload on one Amazon product now scans up to 20 linked variant ASINs
+  in inactive tabs and retains each variant's selected attributes, price, and
+  primary image.
+- Selected products from the same dashboard import group open as one eBay
+  multi-variation listing instead of separate listings.
+- The eBay helper opens **Edit variations**, adds source-backed attributes and
+  values, sets each combination's independently marked-up `.99` price and
+  quantity 11, uploads the corresponding primary photo, and chooses **Save and
+  close** only after all detected rows have been handled.
+- Version 4.2.1 uses the final validated eBay title unchanged as the premium
+  description heading, preventing a weaker second title rewrite.
+
+## What changed in 4.3
+
+- Amazon's current `inline-twister-row-*` card variations are detected, including
+  each card's ASIN, label, displayed price, and color-specific primary image.
+- Card data provides a fallback variation record when a background variant page
+  fails to load, so one failed inactive tab no longer removes the whole family.
+- The eBay **Edit Variations** pencil button is recognized by its accessible
+  label even though its visible text is only **Edit**.
+- Phone mounts map verified facts into Type, Brand, Mounting Location, Mounting
+  Type, Compatible Brand/Model, Features, Color, Items Included, Fastening,
+  Unit Quantity, and Unit Type. Unknown optional claims remain blank.
+- Version 4.3.1 was checked against live Sony headphones, Owala bottles, bella
+  toasters, and Apple AirPods pages. Large multi-dimensional families are now
+  sampled round-robin so Color cannot crowd out Size, Style, or Configuration,
+  and background discovery follows newly found combinations up to a bounded
+  40-ASIN safety limit.
+
 ## What changed in 4.1
 
 - Final titles remain grounded in the original marketplace title and target
@@ -30,6 +61,9 @@ variant graph from creating an unbounded queue.
 - Descriptions are committed through eBay's **Show HTML Code** form field so
   eBay's validation state receives the content; the normal editor remains
   editable after the HTML is committed.
+- Version 4.1.1 replaces first-80-character truncation with a weighted title
+  optimizer that retains compatibility models, quantities, rotation/size data,
+  and product-defining keywords while removing repetition and filler.
 
 ## What changed in 3.0
 

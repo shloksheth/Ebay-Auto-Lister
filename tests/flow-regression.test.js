@@ -10,8 +10,9 @@ const manifest = fs.readFileSync(path.join(root, "manifest.json"), "utf8");
 const content = fs.readFileSync(path.join(root, "content.js"), "utf8");
 const bulk = fs.readFileSync(path.join(root, "bulk.js"), "utf8");
 
-test("photo batch is dispatched exactly once and never through input plus change", () => {
-  assert.equal((ebay.match(/input\.dispatchEvent\(new Event\("change"/g) || []).length, 1);
+test("main photo batch is dispatched once while variation photos use their own one-shot path", () => {
+  assert.equal((ebay.match(/input\.dispatchEvent\(new Event\("change"/g) || []).length, 2);
+  assert.equal((ebay.match(/function uploadOneVariationPhoto/g) || []).length, 1);
   assert.equal((ebay.match(/input\.dispatchEvent\(new Event\("input"/g) || []).length, 0);
   assert.match(ebay, /state\.uploadAttempted/);
   assert.match(ebay, /Edit or view photo/);
@@ -82,4 +83,26 @@ test("bulk dashboard imports product links, discovers variants, and selects prod
   assert.match(bulk, /Import complete/);
   assert.match(bulk, /PREPARE_EBAY_LISTING/);
   assert.match(bulk, /processed < 150/);
+});
+
+test("Amazon variants become one eBay variation listing with prices and photos", () => {
+  assert.match(content, /variantAttributes/);
+  assert.match(content, /inline-twister-row-/);
+  assert.match(content, /sourcePrice: sourcePrice/);
+  assert.match(content, /primaryImage/);
+  assert.match(content, /const balanced = \[\]/);
+  assert.match(content, /groups\.values\(\)/);
+  assert.match(background, /expandAmazonVariants/);
+  assert.match(background, /enqueue\(extracted\.variants\)/);
+  assert.match(background, /queued\.size >= 40/);
+  assert.match(background, /prepareVariationListing/);
+  assert.match(background, /PREPARE_EBAY_VARIATION_LISTING/);
+  assert.match(bulk, /Opened as \$\{response\.variationCount\}-variation listing/);
+  assert.match(ebay, /function fillVariations/);
+  assert.match(ebay, /edit\|create\|add\|manage/);
+  assert.match(ebay, /variation\.price/);
+  assert.match(ebay, /variation\.quantity \|\| 11/);
+  assert.match(ebay, /uploadOneVariationPhoto/);
+  assert.match(ebay, /save and close/);
+  assert.match(ebay, /getAttribute\("aria-label"\)/);
 });

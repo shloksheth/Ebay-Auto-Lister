@@ -163,7 +163,7 @@ async function improveWithLocalAi(product, settings) {
       featureBullets: Core.uniqueStrings(product.bullets).slice(0, 10),
       specifications: Object.fromEntries(Object.entries(Core.normalizeSpecifics(product.specifics)).slice(0, 30)),
     };
-    const raw = await session.prompt(`Create premium eBay listing JSON from these verified facts. The title must remain based on the original title, preserve the exact product identity, use only verified facts, and target 75-80 characters without exceeding 80. Treat ${JSON.stringify(Core.productKind(facts.title) || "the item named in the source title")} as the primary product:\n${JSON.stringify(facts)}`);
+    const raw = await session.prompt(`Create premium eBay listing JSON from these verified facts. Rewrite rather than truncate the source title. Put product type first, retain important quantities, compatibility models, sizes and differentiating features, remove repeated phrases and filler, and target 75-80 characters without exceeding 80. Use only words and facts supported by the input. Example transformation: "for iPhone Magsafe car Mount【20 Strong Magnets】Magnetic Phone Holder for Car Dashboard【360° Rotation】Hands Free Car Phone Holder Mount Dash Fit iPhone 15 14 13 12 Pro Max Plus" becomes "iPhone MagSafe Car Mount 20 Magnets 360° Holder Fits 15 14 13 12 Pro Max Plus". Treat ${JSON.stringify(Core.productKind(facts.title) || "the item named in the source title")} as the primary product:\n${JSON.stringify(facts)}`);
     let parsed = parseJsonObject(raw);
     try {
       const revised = await session.prompt(`Audit the previous JSON for wrong product identity, unsupported claims, repetition, weak wording, and marketplace filler. Rewrite it into stronger premium copy while preserving only verified facts. Return only the corrected JSON.`);
@@ -195,13 +195,14 @@ async function prepareListing(product) {
 
   const mergedSpecifics = Core.deriveEbaySpecifics(Core.normalizeSpecifics(product.specifics), product);
   const localTitle = Core.createPremiumTitle({ ...product, specifics: mergedSpecifics }, 80);
+  const finalTitle = Core.finalizeEbayTitle(product.title, ai?.title || localTitle, mergedSpecifics, 75, 80);
   const listing = {
     id: crypto.randomUUID(),
     createdAt: Date.now(),
     sourceUrl: product.sourceUrl,
     sourcePrice: product.sourcePrice,
-    title: Core.finalizeEbayTitle(product.title, ai?.title || localTitle, mergedSpecifics, 75, 80),
-    description: Core.buildPremiumDescription({ ...product, title: Core.finalizeEbayTitle(product.title, ai?.title || localTitle, mergedSpecifics, 75, 80), specifics: mergedSpecifics, aiOverview: ai?.overview || ai?.description, aiFeatures: ai?.features }),
+    title: finalTitle,
+    description: Core.buildPremiumDescription({ ...product, listingTitle: finalTitle, specifics: mergedSpecifics, aiOverview: ai?.overview || ai?.description, aiFeatures: ai?.features }),
     specifics: mergedSpecifics,
     price: Core.calculateEbayPrice(product.sourcePrice, settings.multiplier),
     quantity: 11,
@@ -280,10 +281,115 @@ async function extractProductUrl(value) {
   }
 }
 
+function productIdentity(product) {
+  const match = String(product?.sourceUrl || "").match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+  return match ? match[1].toUpperCase() : String(product?.sourceUrl || "").split(/[?#]/)[0].toLowerCase();
+}
+
+function usefulVariantAttributes(product, products) {
+  const direct = Core.normalizeSpecifics(product?.variantAttributes);
+  if (Object.keys(direct).length) return direct;
+  const preferred = ["Color", "Colour", "Size", "Style", "Configuration", "Pattern", "Material", "Capacity"];
+  const output = {};
+  for (const key of preferred) {
+    const values = products.map((item) => Core.cleanText(item?.specifics?.[key])).filter(Boolean);
+    if (new Set(values.map((value) => value.toLowerCase())).size > 1 && product?.specifics?.[key]) output[key === "Colour" ? "Color" : key] = product.specifics[key];
+  }
+  return output;
+}
+
+async function expandAmazonVariants(product) {
+  if (product?.source !== "amazon" || !Array.isArray(product.variants) || product.variants.length < 2) return [product];
+  const products = [product];
+  const seen = new Set([productIdentity(product)]);
+  const queued = new Set(seen);
+  const candidates = [];
+  const enqueue = (variants) => {
+    for (const variant of variants || []) {
+      const key = productIdentity({ sourceUrl: variant?.url });
+      if (!variant?.url || queued.has(key) || queued.size >= 40) continue;
+      queued.add(key);
+      candidates.push(variant);
+    }
+  };
+  enqueue(product.variants);
+  while (candidates.length && products.length < 40) {
+    const batch = candidates.splice(0, Math.min(3, 40 - products.length));
+    const results = await Promise.all(batch.map(async (variant) => {
+      try {
+        const extracted = await extractProductUrl(variant.url);
+        extracted.variantAttributes = { ...(variant.attributes || { [variant.dimension || "Variation"]: variant.label }), ...Core.normalizeSpecifics(extracted.variantAttributes) };
+        return extracted;
+      } catch (error) {
+        console.warn(`Marketplace → eBay: skipped variant ${variant.asin || variant.url}`, error);
+        if (!variant.sourcePrice) return null;
+        return {
+          ...product,
+          sourceUrl: variant.url,
+          sourcePrice: variant.sourcePrice,
+          priceText: `$${variant.sourcePrice}`,
+          primaryImage: variant.primaryImage || product.primaryImage,
+          images: Core.uniqueStrings([variant.primaryImage, ...(product.images || [])]),
+          variantAttributes: variant.attributes || { [variant.dimension || "Variation"]: variant.label },
+          variants: [],
+        };
+      }
+    }));
+    for (const extracted of results.filter(Boolean)) {
+      const key = productIdentity(extracted);
+      if (!seen.has(key)) {
+        seen.add(key);
+        products.push(extracted);
+        enqueue(extracted.variants);
+      }
+    }
+  }
+  return products;
+}
+
+async function prepareVariationListing(products) {
+  const unique = [];
+  const seen = new Set();
+  for (const product of products || []) {
+    const key = productIdentity(product);
+    if (!product?.sourcePrice || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(product);
+  }
+  if (unique.length < 2) return prepareListing(unique[0]);
+  const listing = await prepareListing(unique[0]);
+  const variations = [];
+  for (const product of unique) {
+    const attributes = usefulVariantAttributes(product, unique);
+    if (!Object.keys(attributes).length) continue;
+    const orderedUrls = Core.uniqueStrings([product.primaryImage, ...(product.images || [])]);
+    const images = (await fetchUniqueImages(orderedUrls.slice(0, 3))).slice(0, 1);
+    variations.push({
+      id: productIdentity(product),
+      attributes,
+      sourcePrice: product.sourcePrice,
+      price: Core.calculateEbayPrice(product.sourcePrice, listing.settings.multiplier),
+      quantity: 11,
+      images,
+      sourceUrl: product.sourceUrl,
+    });
+  }
+  if (variations.length < 2) return listing;
+  listing.variations = variations;
+  listing.variationAttributes = Core.uniqueStrings(variations.flatMap((variation) => Object.keys(variation.attributes)));
+  await chrome.storage.local.set({ [`${PENDING_PREFIX}${listing.id}`]: listing, activeListingId: listing.id });
+  return listing;
+}
+
+async function openPreparedListing(listing) {
+  const tab = await chrome.tabs.create({ url: `https://www.ebay.com/sl/prelist/suggest?a2e=${encodeURIComponent(listing.id)}` });
+  return bindListingToTab(listing, tab.id);
+}
+
 chrome.runtime.onInstalled.addListener((details) => {
   chrome.storage.local.get(DEFAULTS).then((current) => chrome.storage.local.set(current));
   if (details.reason === "install") chrome.runtime.openOptionsPage();
-  if (details.reason === "update" && details.previousVersion !== "4.1.0") chrome.tabs.create({ url: chrome.runtime.getURL("bulk.html") });
+  if (details.reason === "update" && details.previousVersion !== "4.3.1") chrome.tabs.create({ url: chrome.runtime.getURL("bulk.html") });
 });
 
 chrome.action.onClicked.addListener(() => chrome.tabs.create({ url: chrome.runtime.getURL("bulk.html") }));
@@ -308,16 +414,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "PREPARE_EBAY_LISTING") {
-    prepareListing(message.product)
-      .then(async (listing) => {
-        const tab = await chrome.tabs.create({ url: `https://www.ebay.com/sl/prelist/suggest?a2e=${encodeURIComponent(listing.id)}` });
-        return bindListingToTab(listing, tab.id);
-      })
-      .then((listing) => sendResponse({ ok: true, imageCount: listing.images.length, aiUsed: listing.aiUsed, warning: listing.aiWarning }))
+    expandAmazonVariants(message.product)
+      .then((products) => prepareVariationListing(products))
+      .then(openPreparedListing)
+      .then((listing) => sendResponse({ ok: true, imageCount: listing.images.length, variationCount: listing.variations?.length || 0, aiUsed: listing.aiUsed, warning: listing.aiWarning }))
       .catch((error) => {
         console.error("Marketplace → eBay: prepare failed", error);
         sendResponse({ ok: false, error: error.message || String(error) });
       });
+    return true;
+  }
+
+  if (message.type === "PREPARE_EBAY_VARIATION_LISTING") {
+    prepareVariationListing(message.products)
+      .then(openPreparedListing)
+      .then((listing) => sendResponse({ ok: true, imageCount: listing.images.length, variationCount: listing.variations?.length || 0, aiUsed: listing.aiUsed, warning: listing.aiWarning }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
     return true;
   }
 

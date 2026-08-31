@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Marketplace → eBay Lister Helper",
-  "version": "4.1.0",
+  "version": "4.3.1",
   "description": "Bulk-imports marketplace products and variants into exact-match-free eBay listing flows with on-device AI and verified product data.",
   "permissions": ["downloads", "activeTab", "tabs", "scripting", "storage", "unlimitedStorage"],
   "host_permissions": [

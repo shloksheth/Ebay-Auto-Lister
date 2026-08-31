@@ -87,36 +87,88 @@
 
   function amazonVariants() {
     const output = new Map();
-    const containers = Array.from(document.querySelectorAll('#twister, [id^="variation_"], [data-csa-c-type="widget"][data-csa-c-content-id*="variation"]'));
+    const containers = Array.from(document.querySelectorAll('#twister, [id^="variation_"], [id^="inline-twister-row-"], .inline-twister-row, [data-csa-c-type="widget"][data-csa-c-content-id*="variation"]'));
     for (const container of containers) {
-      const dimension = Core.cleanText(container.querySelector("label, .a-form-label, [id$='_label']")?.textContent || container.id.replace(/^variation_|_name$/g, "")).replace(/:$/, "");
+      const dimension = cleanVariantDimension(container.querySelector("label, .a-form-label, .a-color-secondary, [id$='_label']")?.textContent || container.id);
       container.querySelectorAll('[data-defaultasin], [data-asin], [data-csa-c-item-id], a[href*="/dp/"]').forEach((node) => {
         const href = node.closest("a")?.href || node.querySelector("a")?.href || "";
-        const asin = Core.cleanText(node.getAttribute("data-defaultasin") || node.getAttribute("data-asin") || node.getAttribute("data-csa-c-item-id") || (href.match(/\/dp\/([A-Z0-9]{10})/i) || [])[1]).toUpperCase();
+        const rawAsin = Core.cleanText(node.getAttribute("data-defaultasin") || node.getAttribute("data-asin") || node.getAttribute("data-csa-c-item-id") || (href.match(/\/dp\/([A-Z0-9]{10})/i) || [])[1]).toUpperCase();
+        const asin = (rawAsin.match(/(?:^|ASIN[.:])([A-Z0-9]{10})(?:$|:)/i) || rawAsin.match(/^([A-Z0-9]{10})$/) || [])[1];
         if (!/^[A-Z0-9]{10}$/.test(asin)) return;
-        const label = Core.cleanText(node.getAttribute("title") || node.getAttribute("aria-label") || node.querySelector("img")?.alt || node.textContent || asin);
+        const label = cleanVariantLabel(node.getAttribute("title") || node.getAttribute("aria-label") || node.querySelector("img")?.alt || node.textContent || asin);
+        const existing = output.get(asin) || {};
+        const sourcePrice = Core.parseMoney(node.querySelector(".a-price .a-offscreen, .a-price")?.textContent || node.textContent);
+        const primaryImage = Core.canonicalAmazonImage(node.querySelector("img")?.currentSrc || node.querySelector("img")?.src || "");
         output.set(asin, {
+          ...existing,
           asin,
           dimension: dimension || "Variant",
           label: label || asin,
           url: `https://${location.hostname}/dp/${asin}`,
-          selected: node.getAttribute("aria-checked") === "true" || /selected/i.test(node.className || ""),
+          selected: Boolean(existing.selected || node.getAttribute("data-initiallyselected") === "true" || node.getAttribute("aria-checked") === "true" || node.querySelector('[aria-checked="true"], .a-button-selected') || /selected/i.test(node.className || "")),
+          attributes: { ...(existing.attributes || {}), [dimension || "Variation"]: label || asin },
+          sourcePrice: sourcePrice || existing.sourcePrice || null,
+          primaryImage: primaryImage || existing.primaryImage || "",
         });
       });
       container.querySelectorAll("select option").forEach((option) => {
         const raw = `${option.getAttribute("data-asin") || ""} ${option.value || ""}`;
         const asin = (raw.match(/\b([A-Z0-9]{10})\b/i) || [])[1]?.toUpperCase();
         if (!asin) return;
+        const label = cleanVariantLabel(option.textContent) || asin;
+        const existing = output.get(asin) || {};
         output.set(asin, {
+          ...existing,
           asin,
           dimension: dimension || "Variant",
-          label: Core.cleanText(option.textContent) || asin,
+          label,
           url: `https://${location.hostname}/dp/${asin}`,
-          selected: option.selected,
+          selected: Boolean(existing.selected || option.selected),
+          attributes: { ...(existing.attributes || {}), [dimension || "Variation"]: label },
         });
       });
     }
-    return Array.from(output.values()).slice(0, 40);
+    const values = Array.from(output.values());
+    const selected = values.filter((variant) => variant.selected);
+    const groups = new Map();
+    values.filter((variant) => !variant.selected).forEach((variant) => {
+      const key = variant.dimension || "Variation";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(variant);
+    });
+    const balanced = [];
+    while (balanced.length < 40 && Array.from(groups.values()).some((group) => group.length)) {
+      for (const group of groups.values()) {
+        if (group.length && balanced.length < 40) balanced.push(group.shift());
+      }
+    }
+    const ordered = [];
+    const seenAsins = new Set();
+    [...selected, ...balanced].forEach((variant) => {
+      if (!seenAsins.has(variant.asin)) { seenAsins.add(variant.asin); ordered.push(variant); }
+    });
+    return ordered.slice(0, 40);
+  }
+
+  function cleanVariantLabel(value) {
+    return Core.cleanText(value)
+      .replace(/^(?:click|tap) to select\s*/i, "")
+      .replace(/^(?:color|colour|size|style|configuration)\s*:\s*/i, "")
+      .replace(/\s*(?:currently selected|selected)$/i, "")
+      .replace(/\s*[-–—]\s*\$?\d[\d,.]*.*$/, "")
+      .trim();
+  }
+
+  function cleanVariantDimension(value) {
+    return Core.cleanText(value)
+      .replace(/^variation_/i, "")
+      .replace(/^inline-twister-row-/i, "")
+      .replace(/_name$/i, "")
+      .replace(/_/g, " ")
+      .replace(/\s*:\s*.+$/, "")
+      .replace(/\s*:\s*$/, "")
+      .trim()
+      .replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Variation";
   }
 
   const Amazon = {
@@ -134,8 +186,12 @@
       });
 
       const candidates = [];
+      const primaryCandidates = [];
       document.querySelectorAll("#landingImage, #imgTagWrapperId img, #altImages img, #imageBlock img").forEach((img, index) => {
-        imageCandidate(img, index === 0 ? 5000000 : 1000000 - index).forEach((item) => candidates.push(item));
+        imageCandidate(img, index === 0 ? 5000000 : 1000000 - index).forEach((item) => {
+          candidates.push(item);
+          if (index === 0) primaryCandidates.push(item);
+        });
       });
       document.querySelectorAll("script:not([src])").forEach((script) => {
         const source = script.textContent || "";
@@ -145,7 +201,11 @@
         }
       });
       const images = Core.dedupeImageCandidates(candidates, Core.amazonImageKey, MAX_IMAGES).map(Core.canonicalAmazonImage);
-      const product = { source: "amazon", sourceUrl: location.href, title, priceText, sourcePrice: Core.parseMoney(priceText), bullets, description, specifics: rawSpecifics, images, variants: amazonVariants() };
+      const primaryImage = Core.dedupeImageCandidates(primaryCandidates, Core.amazonImageKey, 1).map(Core.canonicalAmazonImage)[0] || images[0] || "";
+      const variants = amazonVariants();
+      const selectedVariants = variants.filter((variant) => variant.selected && variant.dimension && variant.label && variant.label !== variant.asin);
+      const variantAttributes = Object.assign({}, ...selectedVariants.map((variant) => variant.attributes || { [variant.dimension]: variant.label }));
+      const product = { source: "amazon", sourceUrl: location.href, title, priceText, sourcePrice: Core.parseMoney(priceText), bullets, description, specifics: rawSpecifics, images, primaryImage, variants, variantAttributes };
       product.specifics = Core.deriveEbaySpecifics(rawSpecifics, product);
       return product;
     },
