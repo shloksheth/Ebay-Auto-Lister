@@ -6,6 +6,7 @@ const path = require("node:path");
 const root = path.join(__dirname, "..");
 const ebay = fs.readFileSync(path.join(root, "ebay-content.js"), "utf8");
 const background = fs.readFileSync(path.join(root, "background.js"), "utf8");
+const manifest = fs.readFileSync(path.join(root, "manifest.json"), "utf8");
 
 test("photo batch is dispatched exactly once and never through input plus change", () => {
   assert.equal((ebay.match(/input\.dispatchEvent\(new Event\("change"/g) || []).length, 1);
@@ -36,8 +37,18 @@ test("current eBay item-specific names and landing actions are supported", () =>
   assert.match(ebay, /source-backed item specifics/);
 });
 
-test("eBay no-key AI description flow is supported without blocking local fallback", () => {
-  assert.match(ebay, /ai description/);
-  assert.match(ebay, /eBay AI description \(editable, no API key\)/);
-  assert.match(background, /useEbayAi: true/);
+test("Chrome on-device AI generates listings without eBay AI or an API key", () => {
+  assert.match(background, /globalThis\.LanguageModel/);
+  assert.match(background, /LanguageModel\.create/);
+  assert.match(background, /Chrome Gemini Nano \(on-device\)/);
+  assert.match(background, /useLocalAi: true/);
+  assert.doesNotMatch(ebay, /use ai description/i);
+  assert.doesNotMatch(manifest, /api\.openai\.com/);
+});
+
+test("specifics are delayed and bounded, description is seeded once, and quantity is 11", () => {
+  assert.match(ebay, /4000 - \(Date\.now\(\) - state\.formDetectedAt\)/);
+  assert.match(ebay, /specificAttempts\.get\(entry\.key\).*< 2/);
+  assert.match(ebay, /state\.descriptionSeeded/);
+  assert.match(background, /quantity: 11/);
 });

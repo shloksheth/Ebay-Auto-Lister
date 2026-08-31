@@ -1,4 +1,4 @@
-# Amazon → eBay Lister Helper 3.2.2
+# Amazon → eBay Lister Helper 3.4.0
 
 This Chrome extension reads a product page, prepares a structured eBay listing,
 opens eBay's seller flow, and automatically advances through the forms it can
@@ -20,7 +20,7 @@ identify.
 - The eBay flow automatically searches the title, chooses a sufficiently close
   catalog match (or continues without one), fills the listing form, selects a
   new condition where available, and enables free shipping.
-- Optional OpenAI enhancement writes an accurate title of at most 80 characters
+- Chrome's on-device model writes an accurate title of at most 80 characters
   and a clean description. A deterministic local fallback is always available.
 - Automatic final publication is a separate, off-by-default safety setting.
 - The Chrome toolbar/extension icons use the M Dropshipping parachute package
@@ -36,7 +36,7 @@ identify.
 - Amazon A+ scripts, CSS, templates, and hidden code are removed before any
   description is generated.
 - A built-in no-key premium generator produces an optimized title, overview,
-  feature list, and product-details section. OpenAI remains optional.
+  feature list, and product-details section.
 - Dimensions such as `4.2 x 2.9 x 3.1 inches` are converted to eBay Item
   Length, Width, and Height values; common Amazon labels are mapped to eBay's
   Brand, Model, MPN, Connectivity, Features, and other controls.
@@ -60,8 +60,9 @@ identify.
 - The description is inserted as editable rich text with a concise Overview,
   up to five Key Features, and verified Specifications. Marketplace checkout
   claims and generic boilerplate are removed.
-- eBay's built-in AI description action is enabled by default and needs no API
-  key. The clean local description remains available if eBay AI is unavailable.
+- Chrome's on-device Gemini Nano model writes the title, overview, and key
+  features from verified product facts. It uses Chrome's Prompt API, requires
+  no API key, and does not use eBay AI.
 - Condition-choice screens rank **New with box and papers** first, then other
   brand-new choices, then the top option shown by eBay.
 - Condition confirmation modals using radio buttons are supported, including
@@ -71,6 +72,13 @@ identify.
   **New with box and papers** over a plain **New** choice. When eBay cannot find
   a suitable catalog product, the extension selects **Continue without match**
   (including eBay's alternate wording) and proceeds with a new listing.
+- The listing form now waits four seconds for eBay's template to populate item
+  specifics, changes only one unmatched field per pass, and stops after two
+  failed attempts per field instead of cycling through dropdowns forever.
+- Descriptions are seeded only once and remain editable after eBay's free,
+  built-in AI finishes. Promotional boilerplate and buyer-directed marketplace
+  text receive stricter filtering.
+- Listing quantity is always set to **11**.
 
 ## Install or update
 
@@ -87,9 +95,10 @@ identify.
 - Keep the price multiplier at `1.6` to use the requested pricing rule.
 - Leave **free shipping** and **automatic form advance** enabled for the
   one-click workflow.
-- Leave **Use eBay AI** enabled for AI descriptions without an API key. OpenAI
-  is an optional extra title/fact enhancement; if used, its key is stored in
-  `chrome.storage.local` inside your Chrome profile and never in this folder.
+- Leave **Chrome on-device AI** enabled. Open Extension options and click
+  **Check or download AI model** once. Chrome downloads Gemini Nano to supported
+  Windows, macOS, or Linux computers; generation then runs locally without a
+  per-listing charge or API key.
 - Test several listings with **Automatically click List it** disabled. When
   enabled, the extension can publish and potentially incur eBay fees.
 
@@ -123,7 +132,7 @@ Policy: https://www.ebay.com/help/selling/posting-items/setting-postage-options/
 |---|---|
 | `core.js` | Tested text, pricing, title, description, and image helpers |
 | `content.js` | Product extraction and Amazon-page buttons |
-| `background.js` | Image fetching/hash dedupe, optional AI, storage, eBay tab |
+| `background.js` | Image fetching/hash dedupe, on-device AI, storage, eBay tab |
 | `ebay-content.js` | State-driven eBay flow and verified form filling |
 | `options.html/js/css` | Settings and publish safety control |
 | `styles.css` | Product buttons and eBay progress panel |

@@ -22,19 +22,10 @@
       </section>
 
       <section>
-        <h2>AI description</h2>
-        <label class="check"><input id="useEbayAi" type="checkbox"> Use eBay AI to write the description (no API key required)</label>
-        <p class="note">The extension first inserts a clean, formatted description from verified product facts, then asks eBay’s built-in AI to improve it. The result remains editable.</p>
-        <h3>Optional OpenAI enhancement</h3>
-        <label class="check"><input id="aiEnabled" type="checkbox"> Also use OpenAI to optimize the title and facts</label>
-        <label class="field">OpenAI API key
-          <input id="apiKey" type="password" autocomplete="off" placeholder="sk-…">
-          <small>Stored only in this Chrome profile. Do not share an unpacked extension folder containing credentials.</small>
-        </label>
-        <label class="field">Model
-          <input id="model" type="text" value="gpt-5-mini">
-        </label>
-        <p class="note">This API key is optional. The default eBay AI flow above works without it.</p>
+        <h2>Free on-device AI</h2>
+        <label class="check"><input id="useLocalAi" type="checkbox"> Generate premium listings with Chrome’s on-device Gemini Nano model</label>
+        <p class="note">This is a real generative AI model that runs on your computer. It does not use eBay AI, send product data to an AI provider, require an API key, or charge per listing. Chrome downloads the model once.</p>
+        <div class="actions"><button id="initializeAi" type="button">Check or download AI model</button><span id="aiStatus" role="status"></span></div>
       </section>
 
       <section class="warning">

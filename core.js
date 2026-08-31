@@ -163,7 +163,7 @@
   }
 
   function cleanFeature(value) {
-    let text = sanitizeProductText(value)
+    let text = marketplaceSafeText(value)
       .replace(/^[•\-*\s]+/, "")
       .replace(/^([A-Z][A-Z\s/&-]{2,45})[;:]\s*(?=\S)/, (_, label) => `${label.toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase())}: `)
       .replace(/\s+[–—-]\s+|\s*\|\s*/g, ". ")
@@ -179,7 +179,10 @@
   function marketplaceSafeText(value) {
     const text = sanitizeProductText(value)
       .replace(/\b(?:Amazon|Prime)\b[^.!?]*(?:[.!?]|$)/gi, " ")
-      .replace(/[^.!?]*\b(?:credit (?:will )?automatically|at checkout|source price|seller)\b[^.!?]*(?:[.!?]|$)/gi, " ");
+      .replace(/[^.!?]*\b(?:credit (?:will )?automatically|at checkout|source price|seller)\b[^.!?]*(?:[.!?]|$)/gi, " ")
+      .replace(/\bPlease review all photos[^.!?]*(?:[.!?]|$)/gi, " ")
+      .replace(/\bColors? may vary[^.!?]*(?:[.!?]|$)/gi, " ")
+      .replace(/\b(?:limited time deal|best seller|customers also bought)\b[^.!?]*(?:[.!?]|$)/gi, " ");
     return cleanText(text);
   }
 
@@ -191,7 +194,7 @@
     const selected = [];
     for (const sentence of sentences) {
       const candidate = cleanText(sentence);
-      if (candidate.length < 20 || /\b(?:buy|purchase|checkout|shipping)\b/i.test(candidate)) continue;
+      if (candidate.length < 20 || /\b(?:buy|purchase|checkout|shipping|we|our|you|your)\b/i.test(candidate)) continue;
       selected.push(candidate.replace(/[,:;\s]+$/, "") + (/[.!?]$/.test(candidate) ? "" : "."));
       if (selected.length === 2 || selected.join(" ").length >= 360) break;
     }
@@ -238,9 +241,10 @@
   function buildPremiumDescription(product) {
     const title = createPremiumTitle(product, 80);
     const specifics = deriveEbaySpecifics(product?.specifics, product);
-    const description = marketplaceSafeText(product?.aiDescription || product?.description);
-    const bullets = uniqueStrings((product?.bullets || []).map(cleanFeature))
-      .filter((value) => value.length >= 4 && !/\b(?:Amazon|Prime|checkout|credit)\b/i.test(value))
+    const description = marketplaceSafeText(product?.aiOverview || product?.aiDescription || product?.description);
+    const sourceBullets = Array.isArray(product?.aiFeatures) && product.aiFeatures.length ? product.aiFeatures : product?.bullets || [];
+    const bullets = uniqueStrings(sourceBullets.map(cleanFeature))
+      .filter((value) => value.length >= 4 && !/\b(?:Amazon|Prime|checkout|credit|please review|colors? may vary)\b/i.test(value))
       .slice(0, 5);
     const lines = [title, "", "Overview", conciseOverview(description, title)];
 

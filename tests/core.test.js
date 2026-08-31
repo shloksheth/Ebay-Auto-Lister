@@ -51,6 +51,31 @@ test("premium description is concise, formatted, and removes Amazon checkout cla
   assert.doesNotMatch(description, /Amazon|checkout|PRODUCT OVERVIEW|Please review all photos/i);
 });
 
+test("description removes promotional boilerplate and buyer-directed filler", () => {
+  const description = Core.buildPremiumDescription({
+    title: "Example Watch",
+    description: "Please review all photos before purchase. Colors may vary by screen. Stainless steel construction provides everyday durability.",
+    bullets: ["Best Seller. Customers also bought this item", "Water resistant stainless steel case"],
+    specifics: { Brand: "Example" },
+  });
+  assert.doesNotMatch(description, /Please review|Colors may vary|Best Seller|Customers also bought/i);
+  assert.match(description, /stainless steel/i);
+});
+
+test("on-device AI overview and features replace noisy marketplace copy", () => {
+  const description = Core.buildPremiumDescription({
+    title: "Example Stainless Steel Watch",
+    description: "BUY NOW AMAZON DEAL random marketplace filler",
+    bullets: ["Customers also bought unrelated products"],
+    aiOverview: "A refined stainless steel watch designed for dependable everyday timekeeping.",
+    aiFeatures: ["Durable stainless steel construction", "Clear, easy-to-read dial"],
+    specifics: { Brand: "Example", Material: "Stainless Steel" },
+  });
+  assert.match(description, /refined stainless steel watch/i);
+  assert.match(description, /Clear, easy-to-read dial/);
+  assert.doesNotMatch(description, /BUY NOW|Customers also bought|Amazon/i);
+});
+
 test("condition ranking prefers new with box and papers, then the top newest option", () => {
   assert.equal(Core.rankConditionOptions(["Used", "New", "New with box and papers"]), "New with box and papers");
   assert.equal(Core.rankConditionOptions(["New", "New with tags", "New with box and papers", "Pre-owned"]), "New with box and papers");

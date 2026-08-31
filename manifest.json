@@ -1,15 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Marketplace → eBay Lister Helper",
-  "version": "3.2.2",
-  "description": "Creates structured eBay listings with deduplicated photos, source-backed specifics, no-key eBay AI descriptions, pricing rules, and automatic condition selection.",
+  "version": "3.4.0",
+  "description": "Creates structured eBay listings with deduplicated photos, source-backed specifics, on-device Gemini Nano descriptions, pricing rules, and automatic condition selection.",
   "permissions": ["downloads", "activeTab", "scripting", "storage", "unlimitedStorage"],
   "host_permissions": [
     "*://*.amazon.com/*",
     "*://*.walmart.com/*",
     "*://*.aliexpress.com/*",
-    "*://*.ebay.com/*",
-    "https://api.openai.com/*"
+    "*://*.ebay.com/*"
   ],
   "background": {
     "service_worker": "background.js"

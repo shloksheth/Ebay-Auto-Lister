@@ -17,9 +17,11 @@
     suggestedApplied: false,
     specificCount: 0,
     specificTotal: 0,
-    ebayAiRequested: false,
-    ebayAiCompleted: false,
-    ebayAiStartedAt: 0,
+    formDetectedAt: 0,
+    descriptionSeeded: false,
+    specificsDone: false,
+    nextSpecificAt: 0,
+    specificAttempts: new Map(),
     filled: new Set(),
   };
 
@@ -93,6 +95,14 @@
 
   function priceField() {
     return findField([/buy.*now.*price/, /fixed.*price/, /(^|\s)price(\s|$)/], "input");
+  }
+
+  function quantityField() {
+    return Array.from(document.querySelectorAll("input")).find((input) => {
+      if (!visible(input) || input.disabled || isHeader(input) || /^attributes\./i.test(input.name || "")) return false;
+      const labels = input.labels ? Array.from(input.labels).map((label) => label.textContent).join(" ") : "";
+      return normalized(input.getAttribute("aria-label") || labels || input.name || input.id) === "quantity";
+    }) || null;
   }
 
   function tokenSimilarity(a, b) {
@@ -183,6 +193,8 @@
       inserted = editable.ownerDocument.execCommand("insertHTML", false, html);
     } catch (_) {}
     if (!inserted) editable.innerHTML = html;
+    editable.setAttribute("contenteditable", "true");
+    editable.removeAttribute("aria-disabled");
     editable.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: null }));
     editable.dispatchEvent(new Event("change", { bubbles: true }));
     return normalized(editable.textContent).length >= 40;
@@ -206,28 +218,6 @@
     const editable = descriptionEditable();
     if (editable) return insertEditableHtml(editable, description);
     return false;
-  }
-
-  function requestEbayAiDescription() {
-    const writing = buttons().find((button) => /^writing(?:\.{3}|…)?$/.test(buttonText(button)));
-    const undo = buttons().find((button) => /^undo ai description$/.test(buttonText(button)));
-    const editor = descriptionEditable();
-    if (state.ebayAiRequested) {
-      if (undo) {
-        state.ebayAiCompleted = true;
-        return { pending: false, ok: true };
-      }
-      if (writing || Date.now() - state.ebayAiStartedAt < 45000) return { pending: true, ok: false };
-      const fallbackReady = normalized(editor?.textContent).length >= 60;
-      if (fallbackReady) state.ebayAiCompleted = true;
-      return { pending: false, ok: fallbackReady };
-    }
-    const button = buttons().find((item) => /^(?:use )?ai description$/.test(buttonText(item)));
-    if (!button) return { pending: false, ok: false };
-    button.click();
-    state.ebayAiRequested = true;
-    state.ebayAiStartedAt = Date.now();
-    return { pending: true, ok: false };
   }
 
   function selectValue(select, wanted) {
@@ -300,6 +290,33 @@
   async function fillSpecifics(specifics) {
     const priority = ["Brand", "Type", "Model", "Tracking Method", "Connectivity", "Features", "Color", "Number of Buttons", "Maximum DPI", "MPN", "Item Height", "Item Width", "Item Length", "Unit Quantity", "Unit Type", "Country of Origin", "Charger Included"];
     const source = Core.deriveEbaySpecifics(specifics, { specifics });
+    const keys = [...priority, ...Object.keys(source)];
+    const entries = [];
+    const handled = new Set();
+    for (const rawKey of keys) {
+      const key = SPECIFIC_ALIASES[rawKey] || rawKey;
+      if (handled.has(key) || !source[rawKey]) continue;
+      handled.add(key);
+      const match = specificControl(key);
+      if (match) entries.push({ rawKey, key, value: source[rawKey], field: match.field });
+    }
+
+    const fieldValue = (field) => field instanceof HTMLSelectElement
+      ? field.selectedOptions[0]?.textContent
+      : field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement
+        ? field.value
+        : field.textContent;
+    const isMatch = (entry) => {
+      const expected = normalized(entry.value);
+      const current = normalized(fieldValue(entry.field));
+      return current === expected || (current.length > 1 && (current.includes(expected) || expected.includes(current)));
+    };
+    const currentResult = () => ({
+      matched: entries.filter(isMatch).length,
+      total: entries.length,
+      done: entries.length > 0 && entries.every(isMatch),
+    });
+
     if (!state.suggestedApplied) {
       let selected = 0;
       const suggestions = Array.from(document.querySelectorAll('input[name="extracted-attribute-selector"][type="checkbox"]'));
@@ -314,46 +331,24 @@
       const applyAll = buttons().find((button) => /^apply all$/.test(buttonText(button)));
       if (applyAll && selected) {
         applyAll.click();
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        state.nextSpecificAt = Date.now() + 1200;
       }
       state.suggestedApplied = true;
+      return currentResult();
     }
 
-    const keys = [...priority, ...Object.keys(source)];
-    const handled = new Set();
-    for (const rawKey of keys) {
-      const key = SPECIFIC_ALIASES[rawKey] || rawKey;
-      if (handled.has(key) || !source[rawKey]) continue;
-      handled.add(key);
-      const match = specificControl(key);
-      if (!match) continue;
-      const { field } = match;
-      let ok = false;
-      if (field instanceof HTMLSelectElement) ok = selectValue(field, source[rawKey]);
-      else if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) ok = setValue(field, source[rawKey]);
-      else if (field instanceof HTMLButtonElement) ok = await fillCustomSpecific(field, source[rawKey]);
-      if (ok) await new Promise((resolve) => setTimeout(resolve, 80));
-    }
-    let matched = 0;
-    let total = 0;
-    handled.clear();
-    for (const rawKey of keys) {
-      const key = SPECIFIC_ALIASES[rawKey] || rawKey;
-      if (handled.has(key) || !source[rawKey]) continue;
-      handled.add(key);
-      const match = specificControl(key);
-      if (!match) continue;
-      total += 1;
-      const actual = match.field instanceof HTMLSelectElement
-        ? match.field.selectedOptions[0]?.textContent
-        : match.field instanceof HTMLInputElement || match.field instanceof HTMLTextAreaElement
-          ? match.field.value
-          : match.field.textContent;
-      const expected = normalized(source[rawKey]);
-      const current = normalized(actual);
-      if (current === expected || (current.length > 1 && (current.includes(expected) || expected.includes(current)))) matched += 1;
-    }
-    return { matched, total };
+    const before = currentResult();
+    if (before.done || Date.now() < state.nextSpecificAt) return before;
+
+    const next = entries.find((entry) => !isMatch(entry) && (state.specificAttempts.get(entry.key) || 0) < 2);
+    if (!next) return { ...before, exhausted: true };
+
+    state.specificAttempts.set(next.key, (state.specificAttempts.get(next.key) || 0) + 1);
+    state.nextSpecificAt = Date.now() + 1200;
+    if (next.field instanceof HTMLSelectElement) selectValue(next.field, next.value);
+    else if (next.field instanceof HTMLInputElement || next.field instanceof HTMLTextAreaElement) setValue(next.field, next.value);
+    else if (next.field instanceof HTMLButtonElement) await fillCustomSpecific(next.field, next.value);
+    return currentResult();
   }
 
   function chooseNewestConditionOption() {
@@ -484,37 +479,42 @@
   }
 
   function requiredReady(listing) {
-    const needsSpecifics = Object.keys(listing.specifics || {}).length > 0;
-    const descriptionReady = state.filled.has("description") && (!state.ebayAiRequested || state.ebayAiCompleted);
+    const descriptionReady = state.filled.has("description");
     return state.filled.has("title") && descriptionReady && state.filled.has("price") &&
-      state.filled.has("condition") && state.filled.has("shipping") && state.uploadConfirmed &&
-      (!needsSpecifics || state.filled.has("specifics"));
+      state.filled.has("quantity") && state.filled.has("condition") && state.filled.has("shipping") && state.uploadConfirmed &&
+      state.specificsDone && (state.specificTotal === 0 || state.filled.has("specifics"));
   }
 
   async function fillForm(listing) {
     const title = titleField();
     const price = priceField();
     if (!title && !price) return false;
+    if (!state.formDetectedAt) state.formDetectedAt = Date.now();
 
     if (!state.filled.has("title") && title && setValue(title, listing.title.slice(0, title.maxLength > 0 ? title.maxLength : 80))) state.filled.add("title");
-    if (!state.filled.has("description") && fillDescription(listing.description)) state.filled.add("description");
+    if (!state.descriptionSeeded && fillDescription(listing.description)) {
+      state.descriptionSeeded = true;
+      state.filled.add("description");
+    }
     if (!state.filled.has("price") && price && setValue(price, listing.price)) state.filled.add("price");
-    if (!state.filled.has("specifics")) {
+    const quantity = quantityField();
+    if (!state.filled.has("quantity") && quantity && setValue(quantity, String(listing.quantity || 11))) state.filled.add("quantity");
+    const specificsWait = Math.max(0, 4000 - (Date.now() - state.formDetectedAt));
+    if (!state.specificsDone && specificsWait === 0) {
       const result = await fillSpecifics(listing.specifics);
       state.specificCount = result.matched;
       state.specificTotal = result.total;
-      if (result.total > 0 && result.matched === result.total) state.filled.add("specifics");
+      if (result.done) state.filled.add("specifics");
+      if (result.done || result.exhausted) state.specificsDone = true;
     }
     if (!state.filled.has("condition") && fillCondition()) state.filled.add("condition");
     if (!state.filled.has("shipping") && (!listing.settings.freeShipping || enableFreeShipping())) state.filled.add("shipping");
 
-    let aiDescription = { pending: false, ok: false };
-    if (listing.settings.useEbayAi !== false && state.filled.has("description")) aiDescription = requestEbayAiDescription();
-
     setStatus("title", state.filled.has("title"), "Title");
-    setStatus("description", state.ebayAiCompleted || (state.filled.has("description") && !aiDescription.pending), state.ebayAiCompleted ? "eBay AI description (editable, no API key)" : aiDescription.pending ? "eBay AI is writing the description" : "Premium editable description");
+    setStatus("description", state.filled.has("description"), `${listing.generator || "Premium"} description (editable)`);
     setStatus("price", state.filled.has("price"), `Price $${listing.price}`);
-    setStatus("specifics", state.filled.has("specifics"), `${state.specificCount}/${state.specificTotal || "?"} source-backed item specifics`);
+    setStatus("quantity", state.filled.has("quantity"), `Quantity ${listing.quantity || 11}`);
+    setStatus("specifics", state.filled.has("specifics"), specificsWait > 0 ? `Waiting ${Math.ceil(specificsWait / 1000)}s for eBay item specifics` : state.specificsDone && !state.filled.has("specifics") ? `${state.specificCount}/${state.specificTotal} specifics filled; retries stopped` : `${state.specificCount}/${state.specificTotal || "?"} source-backed item specifics`);
     setStatus("shipping", state.filled.has("shipping"), "Free shipping");
 
     const photoResult = await uploadPhotos(listing.images);
@@ -546,13 +546,14 @@
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="title">… Title</div>
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="description">… Editable description</div>
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="price">… Price</div>
+        <div class="a2e-status-row a2e-step-pending" data-a2e-status="quantity">… Quantity 11</div>
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="specifics">… Item specifics</div>
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="shipping">… Free shipping</div>
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="photos">… Photos</div>
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="publish">… Final submission</div>
       </div>
       <div class="a2e-panel-actions"><button type="button" data-a2e-action="retry">Retry now</button><button type="button" data-a2e-action="toggle">Pause</button></div>
-      ${listing.aiWarning ? `<div class="a2e-status-note">Cloud AI was unavailable; the built-in premium generator was used instead.</div>` : ""}
+      ${listing.aiWarning ? `<div class="a2e-status-note">${escapeHtml(listing.aiWarning)}. A clean editable fallback was used.</div>` : ""}
     `;
     document.body.appendChild(panel);
     panel.querySelector(".a2e-panel-close").addEventListener("click", () => panel.remove());

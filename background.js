@@ -5,14 +5,16 @@ const PENDING_PREFIX = "pendingListing:";
 const MAX_IMAGES = 12;
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 const DEFAULTS = {
-  aiEnabled: false,
-  apiKey: "",
-  model: "gpt-5-mini",
+  useLocalAi: true,
   multiplier: 1.6,
   freeShipping: true,
-  useEbayAi: true,
   autoStart: true,
   autoPublish: false,
+};
+
+const LOCAL_AI_OPTIONS = {
+  expectedInputs: [{ type: "text", languages: ["en"] }],
+  expectedOutputs: [{ type: "text", languages: ["en"] }],
 };
 
 function getSettings() {
@@ -78,62 +80,59 @@ async function fetchUniqueImages(urls) {
   return output;
 }
 
-function responseText(payload) {
-  if (payload.output_text) return payload.output_text;
-  for (const item of payload.output || []) {
-    for (const content of item.content || []) {
-      if (content.type === "output_text" && content.text) return content.text;
-    }
-  }
-  return "";
+function parseJsonObject(text) {
+  const cleaned = String(text || "").replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  try { return JSON.parse(cleaned); } catch (_) {}
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start >= 0 && end > start) return JSON.parse(cleaned.slice(start, end + 1));
+  throw new Error("The on-device AI returned an invalid response");
 }
 
-async function improveWithAi(product, settings) {
-  if (!settings.aiEnabled || !settings.apiKey) return null;
-  const facts = {
-    title: product.title,
-    description: Core.sanitizeProductText(product.description).slice(0, 5000),
-    bullets: Core.uniqueStrings(product.bullets).slice(0, 15),
-    specifics: Core.normalizeSpecifics(product.specifics),
-  };
-  const schema = {
-    type: "object",
-    additionalProperties: false,
-    required: ["title", "description", "specifics"],
-    properties: {
-      title: { type: "string", maxLength: 80 },
-      description: { type: "string", maxLength: 8000 },
-      specifics: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["name", "value"],
-          properties: { name: { type: "string" }, value: { type: "string" } },
-        },
-      },
+async function localAiAvailability() {
+  if (!globalThis.LanguageModel) return "unavailable";
+  try { return await LanguageModel.availability(LOCAL_AI_OPTIONS); }
+  catch (_) { return LanguageModel.availability(); }
+}
+
+async function createLocalAiSession() {
+  if (!globalThis.LanguageModel) throw new Error("Chrome on-device AI is not available in this browser");
+  return LanguageModel.create({
+    ...LOCAL_AI_OPTIONS,
+    initialPrompts: [{
+      role: "system",
+      content: `You are a professional eBay listing copywriter. Use only supplied product facts. Never invent specifications, compatibility, condition, warranty, accessories, or included items. Never mention Amazon, another marketplace, source price, checkout credits, shipping speed, seller claims, or customer reviews. Write polished, concise US English without hype, emojis, filler, instructions to the buyer, or repeated facts. Return only valid JSON with this exact shape: {"title":"80 characters maximum","overview":"one or two premium factual sentences","features":["four to six concise factual bullets"]}.`,
+    }],
+    monitor(monitor) {
+      monitor.addEventListener("downloadprogress", (event) => {
+        chrome.storage.local.set({ localAiDownloadProgress: Math.round((event.loaded || 0) * 100) });
+      });
     },
-  };
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${settings.apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: settings.model || DEFAULTS.model,
-      input: [
-        { role: "system", content: [{ type: "input_text", text: "Create an accurate eBay listing from supplied product facts. Title must be at most 80 characters, front-load brand/model/product type and useful attributes, and contain no unsupported claims. Description must be plain text, editable, concise, professional, and must not mention Amazon, source price, shipping speed, warranties, or facts absent from the input. Preserve useful dimensions, material, color, model and brand in specifics. Never invent values." }] },
-        { role: "user", content: [{ type: "input_text", text: JSON.stringify(facts) }] },
-      ],
-      text: { format: { type: "json_schema", name: "ebay_listing", strict: true, schema } },
-    }),
   });
-  if (!response.ok) throw new Error(`AI request failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
-  const raw = responseText(await response.json());
-  const parsed = JSON.parse(raw);
-  return {
-    title: Core.shortenTitle(parsed.title, 80),
-    description: Core.cleanText(parsed.description).slice(0, 8000),
-    specifics: Core.normalizeSpecifics(Object.fromEntries((parsed.specifics || []).map((item) => [item.name, item.value]))),
-  };
+}
+
+async function improveWithLocalAi(product, settings) {
+  if (!settings.useLocalAi) return null;
+  const availability = await localAiAvailability();
+  if (availability === "unavailable") throw new Error("Chrome on-device AI is unavailable on this computer");
+  const session = await createLocalAiSession();
+  try {
+    const facts = {
+      title: Core.sanitizeProductText(product.title).slice(0, 500),
+      description: Core.sanitizeProductText(product.description).slice(0, 2400),
+      featureBullets: Core.uniqueStrings(product.bullets).slice(0, 10),
+      specifications: Object.fromEntries(Object.entries(Core.normalizeSpecifics(product.specifics)).slice(0, 30)),
+    };
+    const raw = await session.prompt(`Create the premium listing JSON from these verified facts:\n${JSON.stringify(facts)}`);
+    const parsed = parseJsonObject(raw);
+    const title = Core.shortenTitle(parsed.title, 80);
+    const overview = Core.sanitizeProductText(parsed.overview).slice(0, 600);
+    const features = Core.uniqueStrings(Array.isArray(parsed.features) ? parsed.features : []).map(Core.sanitizeProductText).filter((item) => item.length >= 8).slice(0, 6);
+    if (!title || overview.length < 30 || features.length < 2) throw new Error("Chrome on-device AI did not return a complete listing");
+    return { title, overview, features };
+  } finally {
+    session.destroy();
+  }
 }
 
 async function prepareListing(product) {
@@ -141,13 +140,13 @@ async function prepareListing(product) {
   let ai = null;
   let aiWarning = "";
   try {
-    ai = await improveWithAi(product, settings);
+    ai = await improveWithLocalAi(product, settings);
   } catch (error) {
     aiWarning = error.message;
-    console.warn("Marketplace → eBay: AI fallback used", error);
+    console.warn("Marketplace → eBay: on-device AI fallback used", error);
   }
 
-  const mergedSpecifics = Core.deriveEbaySpecifics({ ...Core.normalizeSpecifics(product.specifics), ...(ai?.specifics || {}) }, product);
+  const mergedSpecifics = Core.deriveEbaySpecifics(Core.normalizeSpecifics(product.specifics), product);
   const localTitle = Core.createPremiumTitle({ ...product, specifics: mergedSpecifics }, 80);
   const listing = {
     id: crypto.randomUUID(),
@@ -155,19 +154,19 @@ async function prepareListing(product) {
     sourceUrl: product.sourceUrl,
     sourcePrice: product.sourcePrice,
     title: Core.shortenTitle(ai?.title || localTitle, 80),
-    description: Core.buildPremiumDescription({ ...product, title: ai?.title || localTitle, specifics: mergedSpecifics, aiDescription: ai?.description }),
+    description: Core.buildPremiumDescription({ ...product, title: ai?.title || localTitle, specifics: mergedSpecifics, aiOverview: ai?.overview || ai?.description, aiFeatures: ai?.features }),
     specifics: mergedSpecifics,
     price: Core.calculateEbayPrice(product.sourcePrice, settings.multiplier),
+    quantity: 11,
     images: await fetchUniqueImages(product.images),
     settings: {
       autoStart: Boolean(settings.autoStart),
       autoPublish: Boolean(settings.autoPublish),
       freeShipping: Boolean(settings.freeShipping),
-      useEbayAi: settings.useEbayAi !== false,
       multiplier: Number(settings.multiplier) || DEFAULTS.multiplier,
     },
     aiUsed: Boolean(ai),
-    generator: ai ? "OpenAI + eBay AI" : "eBay AI (no API key) + local fallback",
+    generator: ai ? "Chrome Gemini Nano (on-device)" : "Local premium fallback",
     aiWarning,
   };
   await chrome.storage.local.set({ [`${PENDING_PREFIX}${listing.id}`]: listing, activeListingId: listing.id });
@@ -176,7 +175,7 @@ async function prepareListing(product) {
 
 chrome.runtime.onInstalled.addListener((details) => {
   chrome.storage.local.get(DEFAULTS).then((current) => chrome.storage.local.set(current));
-  if (details.reason === "install") chrome.runtime.openOptionsPage();
+  if (details.reason === "install" || (details.reason === "update" && details.previousVersion !== "3.4.0")) chrome.runtime.openOptionsPage();
 });
 
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
