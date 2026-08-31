@@ -7,12 +7,17 @@ const root = path.join(__dirname, "..");
 const ebay = fs.readFileSync(path.join(root, "ebay-content.js"), "utf8");
 const background = fs.readFileSync(path.join(root, "background.js"), "utf8");
 const manifest = fs.readFileSync(path.join(root, "manifest.json"), "utf8");
+const content = fs.readFileSync(path.join(root, "content.js"), "utf8");
+const bulk = fs.readFileSync(path.join(root, "bulk.js"), "utf8");
 
 test("photo batch is dispatched exactly once and never through input plus change", () => {
   assert.equal((ebay.match(/input\.dispatchEvent\(new Event\("change"/g) || []).length, 1);
   assert.equal((ebay.match(/input\.dispatchEvent\(new Event\("input"/g) || []).length, 0);
   assert.match(ebay, /state\.uploadAttempted/);
   assert.match(ebay, /Edit or view photo/);
+  assert.match(ebay, /currentCount > 0/);
+  assert.match(background, /visualFingerprint/);
+  assert.match(background, /fingerprintDistance/);
 });
 
 test("new listing opens at eBay pre-list instead of the selling landing page", () => {
@@ -24,6 +29,8 @@ test("catalog search can continue when eBay has no matching product", () => {
   assert.match(ebay, /function continueWithoutMatch/);
   assert.match(ebay, /continue without \(\?:a \)\?match/);
   assert.match(ebay, /create listing without/);
+  assert.match(ebay, /Always build from verified source facts/);
+  assert.doesNotMatch(ebay, /best\.button\.click/);
 });
 
 test("current eBay item-specific names and landing actions are supported", () => {
@@ -40,15 +47,39 @@ test("current eBay item-specific names and landing actions are supported", () =>
 test("Chrome on-device AI generates listings without eBay AI or an API key", () => {
   assert.match(background, /globalThis\.LanguageModel/);
   assert.match(background, /LanguageModel\.create/);
-  assert.match(background, /Chrome Gemini Nano \(on-device\)/);
+  assert.match(background, /Chrome Gemini Nano \(two-pass on-device AI\)/);
   assert.match(background, /useLocalAi: true/);
   assert.doesNotMatch(ebay, /use ai description/i);
   assert.doesNotMatch(manifest, /api\.openai\.com/);
+  assert.match(background, /Audit the previous JSON/);
+  assert.match(ebay, /data-a2e-description-images/);
 });
 
 test("specifics are delayed and bounded, description is seeded once, and quantity is 11", () => {
   assert.match(ebay, /4000 - \(Date\.now\(\) - state\.formDetectedAt\)/);
-  assert.match(ebay, /specificAttempts\.get\(entry\.key\).*< 2/);
+  assert.match(ebay, /specificAttempts\.get\(entry\.key\).*< 3/);
   assert.match(ebay, /state\.descriptionSeeded/);
+  assert.match(ebay, /function htmlCodeToggle/);
+  assert.match(ebay, /await fillDescription/);
   assert.match(background, /quantity: 11/);
+});
+
+test("listing automation is scoped to one tab and cannot alter revise pages", () => {
+  assert.match(background, /targetTabId/);
+  assert.match(background, /listing\.targetTabId === senderTabId/);
+  assert.match(background, /isRevisionUrl/);
+  assert.match(ebay, /function isRevisionPage/);
+  assert.match(ebay, /CANCEL_LISTING_AUTOMATION/);
+  assert.match(ebay, /clearInterval\(state\.intervalId\)/);
+});
+
+test("bulk dashboard imports product links, discovers variants, and selects products", () => {
+  assert.match(manifest, /"tabs"/);
+  assert.match(background, /EXTRACT_PRODUCT_URL/);
+  assert.match(background, /active: false/);
+  assert.match(content, /function amazonVariants/);
+  assert.match(content, /EXTRACT_PRODUCT/);
+  assert.match(bulk, /Import complete/);
+  assert.match(bulk, /PREPARE_EBAY_LISTING/);
+  assert.match(bulk, /processed < 150/);
 });

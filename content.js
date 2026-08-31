@@ -85,6 +85,40 @@
     return output;
   }
 
+  function amazonVariants() {
+    const output = new Map();
+    const containers = Array.from(document.querySelectorAll('#twister, [id^="variation_"], [data-csa-c-type="widget"][data-csa-c-content-id*="variation"]'));
+    for (const container of containers) {
+      const dimension = Core.cleanText(container.querySelector("label, .a-form-label, [id$='_label']")?.textContent || container.id.replace(/^variation_|_name$/g, "")).replace(/:$/, "");
+      container.querySelectorAll('[data-defaultasin], [data-asin], [data-csa-c-item-id], a[href*="/dp/"]').forEach((node) => {
+        const href = node.closest("a")?.href || node.querySelector("a")?.href || "";
+        const asin = Core.cleanText(node.getAttribute("data-defaultasin") || node.getAttribute("data-asin") || node.getAttribute("data-csa-c-item-id") || (href.match(/\/dp\/([A-Z0-9]{10})/i) || [])[1]).toUpperCase();
+        if (!/^[A-Z0-9]{10}$/.test(asin)) return;
+        const label = Core.cleanText(node.getAttribute("title") || node.getAttribute("aria-label") || node.querySelector("img")?.alt || node.textContent || asin);
+        output.set(asin, {
+          asin,
+          dimension: dimension || "Variant",
+          label: label || asin,
+          url: `https://${location.hostname}/dp/${asin}`,
+          selected: node.getAttribute("aria-checked") === "true" || /selected/i.test(node.className || ""),
+        });
+      });
+      container.querySelectorAll("select option").forEach((option) => {
+        const raw = `${option.getAttribute("data-asin") || ""} ${option.value || ""}`;
+        const asin = (raw.match(/\b([A-Z0-9]{10})\b/i) || [])[1]?.toUpperCase();
+        if (!asin) return;
+        output.set(asin, {
+          asin,
+          dimension: dimension || "Variant",
+          label: Core.cleanText(option.textContent) || asin,
+          url: `https://${location.hostname}/dp/${asin}`,
+          selected: option.selected,
+        });
+      });
+    }
+    return Array.from(output.values()).slice(0, 40);
+  }
+
   const Amazon = {
     id: "amazon",
     titleNode: () => document.querySelector("#productTitle"),
@@ -111,7 +145,7 @@
         }
       });
       const images = Core.dedupeImageCandidates(candidates, Core.amazonImageKey, MAX_IMAGES).map(Core.canonicalAmazonImage);
-      const product = { source: "amazon", sourceUrl: location.href, title, priceText, sourcePrice: Core.parseMoney(priceText), bullets, description, specifics: rawSpecifics, images };
+      const product = { source: "amazon", sourceUrl: location.href, title, priceText, sourcePrice: Core.parseMoney(priceText), bullets, description, specifics: rawSpecifics, images, variants: amazonVariants() };
       product.specifics = Core.deriveEbaySpecifics(rawSpecifics, product);
       return product;
     },
@@ -234,5 +268,16 @@
 
   const observer = new MutationObserver(insertButtons);
   observer.observe(document.documentElement, { childList: true, subtree: true });
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type !== "EXTRACT_PRODUCT") return false;
+    try {
+      const product = adapter.gather();
+      if (!product.title || !product.sourcePrice) throw new Error("The product title or price was not available");
+      sendResponse({ ok: true, product });
+    } catch (error) {
+      sendResponse({ ok: false, error: error.message || String(error) });
+    }
+    return false;
+  });
   insertButtons();
 })();

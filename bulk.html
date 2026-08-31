@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>M Dropshipping Bulk Import</title>
+    <link rel="stylesheet" href="bulk.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><img src="icons/icon48.png" alt=""><div><strong>M Dropshipping</strong><span>Bulk Import Studio</span></div></div>
+      <button id="settings" class="secondary" type="button">Settings</button>
+    </header>
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Marketplace → eBay</p>
+          <h1>Import products and variants in bulk</h1>
+          <p>Paste one product link per line. The extension opens each page in a temporary background tab, collects its verified details and images, discovers variants, and closes the source tab.</p>
+        </div>
+        <div class="hero-stat"><strong id="importedCount">0</strong><span>products ready</span></div>
+      </section>
+
+      <section class="import-card">
+        <label for="links">Product links</label>
+        <textarea id="links" rows="7" placeholder="https://www.amazon.com/dp/…&#10;https://www.amazon.com/dp/…"></textarea>
+        <div class="import-actions">
+          <button id="import" class="primary" type="button">Import links and variants</button>
+          <button id="clear" class="secondary danger" type="button">Clear imported products</button>
+          <span id="importStatus" role="status"></span>
+        </div>
+      </section>
+
+      <section class="review-card">
+        <div class="review-head">
+          <div>
+            <h2>Review imported products</h2>
+            <p id="selectionSummary">Nothing selected</p>
+          </div>
+          <div class="review-actions">
+            <label class="select-all"><input id="selectAll" type="checkbox"> Select all</label>
+            <button id="sendToEbay" class="primary" type="button" disabled>Add selected to eBay</button>
+          </div>
+        </div>
+        <div id="empty" class="empty">Paste product links above to begin.</div>
+        <div id="products" class="product-grid"></div>
+      </section>
+    </main>
+    <script src="bulk.js"></script>
+  </body>
+</html>

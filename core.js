@@ -67,7 +67,11 @@
 
     const words = text.split(" ");
     while (words.length > 1 && words.join(" ").length > max) words.pop();
-    return words.join(" ").replace(/[\s,;:./-]+$/, "").slice(0, max).trim();
+    return words.join(" ")
+      .replace(/[\s,;:./-]+$/, "")
+      .replace(/\s+\b(?:with|for|and|or|the|a|an|of|to|in)\b$/i, "")
+      .slice(0, max)
+      .trim();
   }
 
   function normalizeSpecifics(specifics) {
@@ -157,6 +161,10 @@
     if (/\bcharger included\b|\bincludes? (?:a )?(?:usb )?(?:charging cable|charger)\b/i.test(searchable)) set("Charger Included", "Yes");
     else if (/\bcharger not included\b|\bdoes not include (?:a )?charger\b/i.test(searchable)) set("Charger Included", "No");
 
+    // eBay commonly requires Brand even when the source marketplace does not
+    // expose one. "Unbranded" is eBay's accepted non-invented value.
+    set("Brand", "Unbranded");
+    if (!output.Type) set("Type", productKind(product?.title));
     set("Unit Quantity", "1");
     set("Unit Type", "Unit");
     return normalizeSpecifics(output);
@@ -209,8 +217,9 @@
       .replace(/\s*\|\s*/g, ", ")
       .replace(/\bMouses\b/gi, "Mouse");
     const brand = specifics.Brand || "";
+    const isComputer = /\b(?:gaming\s+pc|desktop\s+(?:pc|computer)|computer\s+tower|mini\s+pc|workstation)\b/i.test(original);
 
-    if (/\bmouse\b/i.test(original)) {
+    if (/\bmouse\b/i.test(original) && !isComputer) {
       const parts = [brand];
       if (/\bwireless\b/i.test(original)) parts.push("Wireless");
       if (/\bvertical\b/i.test(original)) parts.push("Vertical");
@@ -236,6 +245,94 @@
     const additions = [specifics.Model, specifics.Color, specifics.Size].filter((value) => value && !base.toLowerCase().includes(value.toLowerCase()));
     if (brand && !base.toLowerCase().startsWith(brand.toLowerCase())) base = `${brand} ${base}`;
     return shortenTitle([base, ...additions].join(" "), max);
+  }
+
+  function productKind(title) {
+    const text = cleanText(title).toLowerCase();
+    const kinds = [
+      ["desktop computer", /\b(?:gaming\s+pc|desktop\s+(?:pc|computer)|computer\s+tower|mini\s+pc|workstation)\b/],
+      ["laptop", /\b(?:laptop|notebook computer|chromebook)\b/],
+      ["monitor", /\b(?:computer monitor|gaming monitor|display monitor)\b/],
+      ["printer", /\b(?:printer|all-in-one printer)\b/],
+      ["watch", /\b(?:smartwatch|wristwatch|automatic watch|quartz watch)\b/],
+      ["ring", /\b(?:smart ring|sizing ring|ring sizing kit)\b/],
+      ["keyboard", /\bkeyboard\b/],
+      ["mouse", /\bmouse\b/],
+    ];
+    return kinds.find(([, pattern]) => pattern.test(text))?.[0] || "";
+  }
+
+  function titlePreservesProductIdentity(sourceTitle, generatedTitle, specifics) {
+    const kind = productKind(sourceTitle);
+    const target = cleanText(generatedTitle).toLowerCase();
+    const source = cleanText(sourceTitle).toLowerCase();
+    for (const key of ["Brand", "Model"]) {
+      const value = cleanText(specifics?.[key]).toLowerCase();
+      if (value.length >= 2 && source.includes(value) && !target.includes(value)) return false;
+    }
+    if (!kind) return true;
+    const required = {
+      "desktop computer": /\b(?:pc|desktop|computer|workstation)\b/,
+      laptop: /\b(?:laptop|notebook|chromebook)\b/,
+      monitor: /\b(?:monitor|display)\b/,
+      printer: /\bprinter\b/,
+      watch: /\b(?:watch|smartwatch)\b/,
+      ring: /\bring\b/,
+      keyboard: /\bkeyboard\b/,
+      mouse: /\bmouse\b/,
+    };
+    return required[kind].test(target);
+  }
+
+  function finalizeEbayTitle(sourceTitle, generatedTitle, specifics, minimum, limit) {
+    const min = Math.max(1, Number(minimum) || 75);
+    const max = Math.max(min, Number(limit) || 80);
+    const source = sanitizeProductText(sourceTitle)
+      .replace(/[【】]/g, " ")
+      .replace(/\s*\|\s*/g, ", ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const facts = normalizeSpecifics(specifics);
+    const local = createPremiumTitle({ title: source, specifics: facts }, max);
+    const proposed = shortenTitle(generatedTitle, max);
+    const meaningful = (value) => normalizedTitleTokens(value).filter((token) => token.length > 2);
+    const allowed = new Set(meaningful([source, ...Object.values(facts)].join(" ")));
+    const proposedTokens = meaningful(proposed);
+    const supported = proposedTokens.length > 0 && proposedTokens.every((token) => allowed.has(token));
+    let title = proposed && supported && titlePreservesProductIdentity(source, proposed, facts) ? proposed : local;
+
+    if (title.length < min) {
+      const additions = [facts.Brand, facts.Model, facts.Type, facts.Color, facts.Size, facts.Connectivity]
+        .filter((value) => value && cleanText(value).toLowerCase() !== "unbranded")
+        .concat(source.split(/\s*[,;–—|]\s*/).slice(1));
+      for (const addition of uniqueStrings(additions)) {
+        if (cleanText(title).toLowerCase().includes(cleanText(addition).toLowerCase())) continue;
+        const candidate = cleanText(`${title} ${addition}`);
+        if (candidate.length <= max) title = candidate;
+        if (title.length >= min) break;
+      }
+    }
+
+    // If the source itself contains more useful detail, prefer its natural word
+    // order over padding a rewrite with disconnected keywords.
+    const sourceSized = shortenTitle(source, max);
+    if (title.length < min && sourceSized.length > title.length && titlePreservesProductIdentity(source, sourceSized, facts)) title = sourceSized;
+    if (title.length < min) {
+      const fillerStopWords = new Set(["with", "from", "this", "that", "your", "and", "for", "the", "item"]);
+      const remaining = normalizedTitleTokens(source).reverse().filter((token) => token.length > 2 && !fillerStopWords.has(token));
+      for (const token of uniqueStrings(remaining)) {
+        if (normalizedTitleTokens(title).includes(token)) continue;
+        const sourceWord = (source.match(new RegExp(`\\b${token.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i")) || [token])[0];
+        const candidate = `${title} ${sourceWord}`;
+        if (candidate.length <= max) title = candidate;
+        if (title.length >= min) break;
+      }
+    }
+    return shortenTitle(title, max);
+  }
+
+  function normalizedTitleTokens(value) {
+    return cleanText(value).toLowerCase().match(/[a-z0-9]+/g) || [];
   }
 
   function buildPremiumDescription(product) {
@@ -346,5 +443,8 @@
     shortenTitle,
     sanitizeProductText,
     uniqueStrings,
+    productKind,
+    titlePreservesProductIdentity,
+    finalizeEbayTitle,
   };
 });

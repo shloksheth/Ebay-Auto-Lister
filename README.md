@@ -1,8 +1,35 @@
-# Amazon → eBay Lister Helper 3.4.0
+# M Dropshipping Bulk Import 4.1.0
 
 This Chrome extension reads a product page, prepares a structured eBay listing,
 opens eBay's seller flow, and automatically advances through the forms it can
 identify.
+
+## Bulk Import Studio
+
+Clicking the extension icon now opens a full-page bulk dashboard. Paste one or
+more supported marketplace product links, then choose **Import links and
+variants**. The importer uses temporary inactive tabs to load each page with its
+normal browser environment, extracts title, current price, description,
+features, item specifics, high-resolution images, and discoverable Amazon
+variant ASINs, then closes each temporary tab.
+
+Every successfully imported base product and variant appears in a review grid.
+Use **Select all** or choose individual products, then select **Add selected to
+eBay**. Each selected product receives its own isolated eBay automation tab, so
+one item cannot overwrite another. Imported products remain saved locally in
+the dashboard until cleared. A 150-product import safety limit prevents a bad
+variant graph from creating an unbounded queue.
+
+## What changed in 4.1
+
+- Final titles remain grounded in the original marketplace title and target
+  75–80 characters when enough verified product facts are available.
+- Missing source brands are entered as eBay's accepted **Unbranded** value.
+- Item-specific dropdowns now wait for eBay's menu, verify the selected value,
+  and retry a bounded three times instead of silently counting a click.
+- Descriptions are committed through eBay's **Show HTML Code** form field so
+  eBay's validation state receives the content; the normal editor remains
+  editable after the HTML is committed.
 
 ## What changed in 3.0
 
@@ -79,6 +106,21 @@ identify.
   built-in AI finishes. Promotional boilerplate and buyer-directed marketplace
   text receive stricter filtering.
 - Listing quantity is always set to **11**.
+- eBay catalog matches are now always skipped. This prevents an accessory or
+  visually similar product from replacing the source title, category, photos,
+  or item specifics.
+- Product-identity checks prevent bundled words such as "keyboard and mouse"
+  from turning a desktop PC listing into a mouse listing.
+- Image files are compared by both cryptographic hash and a pixel-based visual
+  fingerprint, catching the same photo served at different sizes or quality.
+  A resumed draft with existing photos never receives the batch again.
+- The on-device AI performs a second quality-review pass before the listing is
+  accepted. Up to four useful, visually unique product images are also placed
+  in the editable description.
+- Each prepared product is bound to only the exact eBay tab opened for it.
+  Other seller tabs cannot retrieve or apply that product. Revise/edit listing
+  pages are explicitly blocked, and closing the floating panel now cancels the
+  automation permanently instead of hiding it while it continues running.
 
 ## Install or update
 
@@ -134,5 +176,6 @@ Policy: https://www.ebay.com/help/selling/posting-items/setting-postage-options/
 | `content.js` | Product extraction and Amazon-page buttons |
 | `background.js` | Image fetching/hash dedupe, on-device AI, storage, eBay tab |
 | `ebay-content.js` | State-driven eBay flow and verified form filling |
+| `bulk.html/js/css` | Bulk link import, recursive variant queue, review and selection dashboard |
 | `options.html/js/css` | Settings and publish safety control |
 | `styles.css` | Product buttons and eBay progress panel |

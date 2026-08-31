@@ -22,6 +22,7 @@
     specificsDone: false,
     nextSpecificAt: 0,
     specificAttempts: new Map(),
+    intervalId: null,
     filled: new Set(),
   };
 
@@ -45,13 +46,15 @@
   function setValue(element, value) {
     if (!element || String(value ?? "") === "") return false;
     const next = String(value);
+    element.focus();
     const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
     if (setter) setter.call(element, next);
     else element.value = next;
     element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: next }));
     element.dispatchEvent(new Event("change", { bubbles: true }));
-    element.dispatchEvent(new Event("blur", { bubbles: true }));
+    element.dispatchEvent(new Event("focusout", { bubbles: true }));
+    element.blur();
     return normalized(element.value) === normalized(next);
   }
 
@@ -115,18 +118,8 @@
   }
 
   function chooseBestMatch(title) {
-    const actionRegex = /sell (?:one|this)|select|list this|use this|choose|start with this|use this title/;
-    const candidates = buttons().filter((button) => actionRegex.test(buttonText(button)));
-    let best = null;
-    for (const button of candidates) {
-      const container = button.closest("li, article, [class*=card], [data-testid*=result]") || button.parentElement;
-      const score = tokenSimilarity(title, container?.textContent || "");
-      if (!best || score > best.score) best = { button, score };
-    }
-    if (best && best.score >= 0.55) {
-      best.button.click();
-      return true;
-    }
+    // Catalog matches can silently replace the title, category, photos and
+    // specifics with a different product. Always build from verified source facts.
     return continueWithoutMatch();
   }
 
@@ -141,7 +134,7 @@
     ], /cancel|back|search again/));
   }
 
-  function descriptionHtml(value) {
+  function descriptionHtml(value, images) {
     const escape = (text) => String(text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     const lines = String(value || "").split(/\r?\n/).map((line) => Core.cleanText(line));
     let html = "";
@@ -162,6 +155,14 @@
       else html += `<p>${escape(line)}</p>`;
     });
     if (inList) html += "</ul>";
+    const usefulImages = Array.from(new Set((images || []).map((image) => image?.sourceUrl).filter((url) => /^https:\/\//i.test(url)))).slice(0, 4);
+    if (usefulImages.length) {
+      html += '<h3>Product Images</h3><div data-a2e-description-images="true">';
+      usefulImages.forEach((url, index) => {
+        html += `<p><img src="${escape(url)}" alt="Product image ${index + 1}" style="display:block;max-width:100%;height:auto;margin:12px auto;border-radius:8px"></p>`;
+      });
+      html += "</div>";
+    }
     return html;
   }
 
@@ -180,8 +181,8 @@
     return normalized(editable.textContent).startsWith(normalized(value).slice(0, 40));
   }
 
-  function insertEditableHtml(editable, value) {
-    const html = descriptionHtml(value);
+  function insertEditableHtml(editable, value, images) {
+    const html = descriptionHtml(value, images);
     editable.focus();
     let inserted = false;
     try {
@@ -211,13 +212,64 @@
     return null;
   }
 
-  function fillDescription(description) {
-    const textarea = findField([/description/, /describe.*item/], "textarea");
-    if (textarea) return setValue(textarea, description);
+  function htmlCodeToggle() {
+    const controls = Array.from(document.querySelectorAll('input[type="checkbox"], button[role="checkbox"], [role="checkbox"]'))
+      .filter((element) => visible(element) && !element.disabled && !element.closest("#a2e-ebay-panel"));
+    return controls.find((element) => /show html code|html code/.test(`${describe(element)} ${normalized(element.closest("label")?.textContent)} ${normalized(element.parentElement?.textContent)}`)) || null;
+  }
+
+  function toggleChecked(toggle) {
+    return toggle instanceof HTMLInputElement ? toggle.checked : toggle.getAttribute("aria-checked") === "true";
+  }
+
+  function descriptionTextarea(allowLargestFallback) {
+    const candidates = Array.from(document.querySelectorAll("textarea")).filter((element) => {
+      if (!visible(element) || element.disabled || /^attributes\./i.test(element.name || "")) return false;
+      const context = normalized(element.closest("section,fieldset,[class*='description' i],[data-testid*='description' i]")?.textContent);
+      return /desc|html|summary|rte/.test(describe(element)) || /\bdescription\b/.test(context);
+    });
+    if (candidates.length) return candidates.sort((left, right) => (right.clientWidth * right.clientHeight) - (left.clientWidth * left.clientHeight))[0];
+    if (!allowLargestFallback) return null;
+    return Array.from(document.querySelectorAll("textarea"))
+      .filter((element) => visible(element) && !element.disabled && !/^attributes\./i.test(element.name || ""))
+      .sort((left, right) => (right.clientWidth * right.clientHeight) - (left.clientWidth * left.clientHeight))[0] || null;
+  }
+
+  async function fillDescription(description, images) {
+    const html = descriptionHtml(description, images);
+    const toggle = htmlCodeToggle();
+    let openedHtmlMode = false;
+    if (toggle && !toggleChecked(toggle)) {
+      toggle.click();
+      openedHtmlMode = true;
+      await new Promise((resolve) => setTimeout(resolve, 650));
+    }
+
+    const textarea = descriptionTextarea(Boolean(toggle && toggleChecked(toggle)));
+    if (textarea) {
+      const committed = setValue(textarea, html) && normalized(textarea.value).includes(normalized(Core.cleanText(description).slice(0, 35)));
+      await new Promise((resolve) => setTimeout(resolve, 650));
+      if (!committed) return false;
+      if (toggle && openedHtmlMode && toggleChecked(toggle)) {
+        toggle.click();
+        await new Promise((resolve) => setTimeout(resolve, 650));
+      }
+      const editable = descriptionEditable();
+      if (!editable || normalized(editable.textContent).length >= 35) return true;
+
+      // If eBay failed to render the committed HTML, leave HTML mode populated;
+      // this is the form field eBay validates when List it is clicked.
+      if (toggle && !toggleChecked(toggle)) {
+        toggle.click();
+        await new Promise((resolve) => setTimeout(resolve, 450));
+        const retry = descriptionTextarea(true);
+        return Boolean(retry && setValue(retry, html));
+      }
+      return true;
+    }
 
     const editable = descriptionEditable();
-    if (editable) return insertEditableHtml(editable, description);
-    return false;
+    return editable ? insertEditableHtml(editable, description, images) : false;
   }
 
   function selectValue(select, wanted) {
@@ -256,12 +308,18 @@
   }
 
   async function fillCustomSpecific(button, value) {
-    if (normalized(buttonText(button)) === normalized(value)) return true;
+    const target = normalized(value);
+    const selected = () => {
+      const current = normalized(buttonText(button));
+      return current === target || (current.length > 1 && (current.includes(target) || target.includes(current)));
+    };
+    if (selected()) return true;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 120));
     button.click();
-    await new Promise((resolve) => setTimeout(resolve, 180));
+    await new Promise((resolve) => setTimeout(resolve, 450));
 
     const optionCandidates = Array.from(document.querySelectorAll('[role="option"], [role="menuitem"], [role="menuitemradio"], [role="listbox"] button, [class*="menu" i] button, [class*="dropdown" i] button')).filter((element) => visible(element) && element !== button && !element.closest("#a2e-ebay-panel"));
-    const target = normalized(value);
     const exact = optionCandidates.find((option) => normalized(option.textContent || option.getAttribute("aria-label")) === target);
     const partial = optionCandidates.find((option) => {
       const text = normalized(option.textContent || option.getAttribute("aria-label"));
@@ -269,19 +327,21 @@
     });
     if (exact || partial) {
       (exact || partial).click();
-      return true;
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      return selected();
     }
 
     const overlayInputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])')).filter((input) => visible(input) && !isHeader(input) && /search|enter|own|value|filter/i.test(describe(input)));
     const input = overlayInputs[overlayInputs.length - 1];
     if (input && setValue(input, value)) {
-      await new Promise((resolve) => setTimeout(resolve, 180));
+      await new Promise((resolve) => setTimeout(resolve, 650));
       const newOptions = Array.from(document.querySelectorAll('[role="option"], [role="menuitem"], [role="menuitemradio"], [role="listbox"] button')).filter(visible);
       const match = newOptions.find((option) => normalized(option.textContent || option.getAttribute("aria-label")) === target) ||
         newOptions.find((option) => normalized(option.textContent || option.getAttribute("aria-label")).includes(target));
       if (match) match.click();
       else pressEnter(input);
-      return true;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return selected() || normalized(input.value) === target;
     }
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
     return false;
@@ -340,14 +400,14 @@
     const before = currentResult();
     if (before.done || Date.now() < state.nextSpecificAt) return before;
 
-    const next = entries.find((entry) => !isMatch(entry) && (state.specificAttempts.get(entry.key) || 0) < 2);
+    const next = entries.find((entry) => !isMatch(entry) && (state.specificAttempts.get(entry.key) || 0) < 3);
     if (!next) return { ...before, exhausted: true };
 
     state.specificAttempts.set(next.key, (state.specificAttempts.get(next.key) || 0) + 1);
-    state.nextSpecificAt = Date.now() + 1200;
+    state.nextSpecificAt = Date.now() + 1800;
     if (next.field instanceof HTMLSelectElement) selectValue(next.field, next.value);
     else if (next.field instanceof HTMLInputElement || next.field instanceof HTMLTextAreaElement) setValue(next.field, next.value);
-    else if (next.field instanceof HTMLButtonElement) await fillCustomSpecific(next.field, next.value);
+    else await fillCustomSpecific(next.field, next.value);
     return currentResult();
   }
 
@@ -435,9 +495,11 @@
   async function uploadPhotos(images) {
     if (!images?.length) return { ok: false, reason: "No usable source photos" };
     const currentCount = photoCount();
-    if (!state.uploadAttempted && currentCount >= Math.min(images.length, 24)) {
+    if (!state.uploadAttempted && currentCount > 0) {
+      // A refresh or resumed draft must never resend the full batch. Since this
+      // version skips catalog matches, a fresh self-created listing starts at 0.
       state.uploadConfirmed = true;
-      return { ok: true, count: currentCount };
+      return { ok: true, count: currentCount, existing: true };
     }
     if (state.uploadConfirmed || (state.uploadAttempted && currentCount > state.photoBefore)) {
       state.uploadConfirmed = true;
@@ -492,7 +554,7 @@
     if (!state.formDetectedAt) state.formDetectedAt = Date.now();
 
     if (!state.filled.has("title") && title && setValue(title, listing.title.slice(0, title.maxLength > 0 ? title.maxLength : 80))) state.filled.add("title");
-    if (!state.descriptionSeeded && fillDescription(listing.description)) {
+    if (!state.descriptionSeeded && await fillDescription(listing.description, listing.images)) {
       state.descriptionSeeded = true;
       state.filled.add("description");
     }
@@ -518,7 +580,7 @@
     setStatus("shipping", state.filled.has("shipping"), "Free shipping");
 
     const photoResult = await uploadPhotos(listing.images);
-    setStatus("photos", photoResult.ok, photoResult.ok ? `${listing.images.length} unique photos sent` : photoResult.reason);
+    setStatus("photos", photoResult.ok, photoResult.ok ? `${photoResult.count || listing.images.length} unique photos ${photoResult.existing ? "already present" : "sent"}` : photoResult.reason);
 
     if (listing.settings.autoPublish && requiredReady(listing) && !state.published) {
       const publish = clickButton([/^list it$/, /^publish$/, /^submit listing$/], /preview|save|schedule/);
@@ -556,9 +618,23 @@
       ${listing.aiWarning ? `<div class="a2e-status-note">${escapeHtml(listing.aiWarning)}. A clean editable fallback was used.</div>` : ""}
     `;
     document.body.appendChild(panel);
-    panel.querySelector(".a2e-panel-close").addEventListener("click", () => panel.remove());
+    panel.querySelector(".a2e-panel-close").addEventListener("click", () => cancelAutomation(listing, true));
     panel.querySelector('[data-a2e-action="retry"]').addEventListener("click", () => { state.searchSubmitted = false; state.choiceClicked = false; state.conditionChoiceClicked = false; advance(listing); });
     panel.querySelector('[data-a2e-action="toggle"]').addEventListener("click", (event) => { state.running = !state.running; event.currentTarget.textContent = state.running ? "Pause" : "Resume"; if (state.running) advance(listing); });
+  }
+
+  function isRevisionPage() {
+    const url = `${location.pathname} ${location.search}`;
+    const heading = document.querySelector("h1")?.textContent || document.title || "";
+    return /(?:revise|revision|editlisting|mode=(?:revise|edit))/i.test(url) || /\b(?:revise|edit) (?:your )?listing\b/i.test(heading);
+  }
+
+  function cancelAutomation(listing, removePanel) {
+    state.running = false;
+    if (state.intervalId) clearInterval(state.intervalId);
+    state.intervalId = null;
+    if (removePanel) document.getElementById("a2e-ebay-panel")?.remove();
+    chrome.runtime.sendMessage({ type: "CANCEL_LISTING_AUTOMATION", id: listing.id }, () => void chrome.runtime.lastError);
   }
 
   function escapeHtml(value) {
@@ -569,6 +645,10 @@
 
   async function advance(listing) {
     if (!state.running || state.busy) return;
+    if (isRevisionPage()) {
+      cancelAutomation(listing, true);
+      return;
+    }
     state.busy = true;
     try {
       if (await fillForm(listing)) {
@@ -613,7 +693,7 @@
 
       if (!state.choiceClicked && chooseBestMatch(listing.title)) {
         state.choiceClicked = true;
-        setStatus("flow", true, "Best catalog match/category path selected");
+        setStatus("flow", true, "Skipped eBay catalog matches to preserve the exact product");
         return;
       }
 
@@ -633,12 +713,12 @@
   }
 
   const isSellerFlow = /\/(?:sl|lstng|sell|listing)(?:\/|$)/i.test(location.pathname) || new URLSearchParams(location.search).has("a2e");
-  if (!Core || !/ebay\./i.test(location.hostname) || !isSellerFlow) return;
+  if (!Core || !/ebay\./i.test(location.hostname) || !isSellerFlow || isRevisionPage()) return;
   getListing().then((listing) => {
     if (!listing || Date.now() - listing.createdAt > MAX_AGE) return;
     buildPanel(listing);
     if (!listing.settings.autoStart) state.running = false;
-    setInterval(() => advance(listing), 1400);
+    state.intervalId = setInterval(() => advance(listing), 1400);
     advance(listing);
   });
 })();

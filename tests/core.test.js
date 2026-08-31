@@ -104,6 +104,18 @@ test("local premium generator creates an informative mouse title without an API 
   assert.ok(title.length <= 80);
 });
 
+test("a desktop PC bundle containing a keyboard and mouse remains a PC listing", () => {
+  const source = "HP RGB Gaming Desktop PC Computer Tower with Keyboard and Mouse";
+  const title = Core.createPremiumTitle({ title: source, specifics: { Brand: "HP" } }, 80);
+  assert.match(title, /\b(?:Desktop|PC|Computer)\b/i);
+  assert.doesNotMatch(title, /^HP Mouse$/i);
+  assert.equal(Core.productKind(source), "desktop computer");
+  assert.equal(Core.titlePreservesProductIdentity(source, "HP Wireless Mouse"), false);
+  assert.equal(Core.titlePreservesProductIdentity(source, "HP Gaming Desktop PC Bundle"), true);
+  assert.equal(Core.titlePreservesProductIdentity(source, "Generic Gaming Desktop PC", { Brand: "HP" }), false);
+  assert.doesNotMatch(Core.createPremiumTitle({ title: `${source} Intel Core i7 16GB RAM 1TB SSD with Keyboard and Mouse`, specifics: { Brand: "HP" } }, 80), /\bwith$/i);
+});
+
 test("product dimensions are converted into eBay item-specific fields", () => {
   const specifics = Core.deriveEbaySpecifics({
     Brand: "Example",
@@ -113,4 +125,17 @@ test("product dimensions are converted into eBay item-specific fields", () => {
   assert.equal(specifics["Item Width"], "2.9 in");
   assert.equal(specifics["Item Height"], "3.1 in");
   assert.equal(specifics["Unit Quantity"], "1");
+});
+
+test("missing brands use eBay's accepted Unbranded value", () => {
+  const specifics = Core.deriveEbaySpecifics({}, { title: "Rechargeable Desk Lamp" });
+  assert.equal(specifics.Brand, "Unbranded");
+});
+
+test("final title stays source-backed and targets 75-80 characters when facts allow", () => {
+  const source = "AULA Gaming Desktop PC Computer Tower Intel Core i7 16GB RAM 1TB SSD RGB Keyboard and Mouse Bundle";
+  const title = Core.finalizeEbayTitle(source, "AULA Powerful Gaming Computer", { Brand: "AULA", Type: "Desktop Computer" }, 75, 80);
+  assert.ok(title.length >= 75 && title.length <= 80, `${title.length}: ${title}`);
+  assert.equal(Core.titlePreservesProductIdentity(source, title, { Brand: "AULA" }), true);
+  assert.match(title, /Desktop|PC|Computer/i);
 });
