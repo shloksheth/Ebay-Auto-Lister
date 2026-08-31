@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Amazon → eBay Lister settings</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <h1>Amazon → eBay Lister</h1>
+      <p class="lead">Configure the listing once, then use the upload button beside an Amazon product title.</p>
+
+      <section>
+        <h2>Listing rules</h2>
+        <label class="field">Price multiplier
+          <input id="multiplier" type="number" min="1" max="10" step="0.05" value="1.6">
+          <small>The result is rounded upward to a price ending in .99.</small>
+        </label>
+        <label class="check"><input id="freeShipping" type="checkbox"> Select free shipping when eBay offers it</label>
+        <label class="check"><input id="autoStart" type="checkbox"> Automatically advance through search, catalog match, and listing forms</label>
+      </section>
+
+      <section>
+        <h2>Optional AI enhancement</h2>
+        <label class="check"><input id="aiEnabled" type="checkbox"> Use AI to optimize titles and descriptions</label>
+        <label class="field">OpenAI API key
+          <input id="apiKey" type="password" autocomplete="off" placeholder="sk-…">
+          <small>Stored only in this Chrome profile. Do not share an unpacked extension folder containing credentials.</small>
+        </label>
+        <label class="field">Model
+          <input id="model" type="text" value="gpt-5-mini">
+        </label>
+        <p class="note">If AI is disabled or unavailable, the extension uses an accurate local 80-character title and clean editable description instead.</p>
+      </section>
+
+      <section class="warning">
+        <h2>Final publication</h2>
+        <label class="check"><input id="autoPublish" type="checkbox"> Automatically click eBay’s final “List it” button</label>
+        <p>Keep this off while testing. Turning it on can publish listings and incur eBay fees. eBay allows wholesale-supplier fulfillment but prohibits buying from another retailer or marketplace after a sale and having it ship directly to the buyer. Use this only with inventory or a compliant supplier arrangement. You are responsible for accuracy, image rights, fulfillment, and marketplace policy compliance.</p>
+      </section>
+
+      <div class="actions"><button id="save" type="button">Save settings</button><span id="status" role="status"></span></div>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

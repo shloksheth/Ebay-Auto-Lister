@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Marketplace → eBay Lister Helper",
-  "version": "2.0.0",
-  "description": "Adds buttons next to the product title on Amazon, Walmart, AliExpress, and eBay listings to copy/download best-quality photos, and to auto-fill title, description, price, and photos into a new eBay listing.",
+  "version": "3.0.1",
+  "description": "Creates structured eBay listings from marketplace products with deduplicated photos, editable descriptions, item specifics, pricing rules, and optional AI enhancement.",
   "permissions": ["downloads", "activeTab", "scripting", "storage", "unlimitedStorage"],
   "host_permissions": [
     "*://*.amazon.com/*",
     "*://*.walmart.com/*",
     "*://*.aliexpress.com/*",
-    "*://*.ebay.com/*"
+    "*://*.ebay.com/*",
+    "https://api.openai.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -21,17 +22,22 @@
         "*://*.aliexpress.com/*",
         "*://*.ebay.com/itm/*"
       ],
-      "js": ["content.js"],
+      "js": ["core.js", "content.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
     },
     {
-      "matches": ["*://*.ebay.com/sl/*"],
-      "js": ["ebay-content.js"],
+      "matches": ["*://*.ebay.com/*"],
+      "exclude_matches": ["*://*.ebay.com/itm/*"],
+      "js": ["core.js", "ebay-content.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
     }
   ],
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Amazon → eBay Lister settings"
+  },
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",

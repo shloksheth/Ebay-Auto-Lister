@@ -1,117 +1,212 @@
-// Handles:
-//  1. DOWNLOAD_IMAGES  - saving product photos straight to disk (existing feature).
-//  2. PREPARE_EBAY_LISTING - fetching product photos as base64 (using the
-//     extension's cross-origin fetch privileges, so no CORS problems),
-//     stashing everything in chrome.storage.local, and opening a new eBay
-//     tab. The eBay-side content script (ebay-content.js) then reads this
-//     data and fills in the listing form.
+importScripts("core.js");
 
-const PENDING_LISTING_KEY = "pendingListing";
-const MAX_IMAGES_FOR_EBAY = 12; // eBay listings commonly cap around this
+const Core = globalThis.A2ECore;
+const PENDING_PREFIX = "pendingListing:";
+const MAX_IMAGES = 12;
+const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+const DEFAULTS = {
+  aiEnabled: false,
+  apiKey: "",
+  model: "gpt-5-mini",
+  multiplier: 1.6,
+  freeShipping: true,
+  autoStart: true,
+  autoPublish: false,
+};
 
-function guessExtension(url, blobType) {
-  const fromUrl = url.match(/\.(jpg|jpeg|png|webp|gif)(?:[?#]|$)/i);
-  if (fromUrl) return fromUrl[1].toLowerCase();
-  if (blobType && blobType.includes("/")) return blobType.split("/")[1];
-  return "jpg";
+function getSettings() {
+  return chrome.storage.local.get(DEFAULTS);
 }
 
-function bufferToBase64(buffer) {
+function safeFolder(title) {
+  return (Core.cleanText(title || "product").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "product");
+}
+
+function extensionFor(type, url) {
+  const allowed = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" };
+  if (allowed[type]) return allowed[type];
+  return (String(url).match(/\.(jpg|jpeg|png|webp|gif)(?:[?#]|$)/i) || [null, "jpg"])[1].toLowerCase();
+}
+
+function bytesToBase64(bytes) {
   let binary = "";
-  const bytes = new Uint8Array(buffer);
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode.apply(
-      null,
-      bytes.subarray(i, i + chunkSize)
-    );
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
   }
   return btoa(binary);
 }
 
-async function fetchImageAsDataUrl(url, index) {
+async function sha256(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+async function fetchImage(url, index) {
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
-    const buffer = await blob.arrayBuffer();
-    const base64 = bufferToBase64(buffer);
-    const mime = blob.type || "image/jpeg";
-    const ext = guessExtension(url, blob.type);
+    const response = await fetch(url, { credentials: "omit", cache: "force-cache" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const type = (response.headers.get("content-type") || "image/jpeg").split(";")[0].toLowerCase();
+    if (!type.startsWith("image/")) throw new Error(`Unexpected content type ${type}`);
+    const buffer = await response.arrayBuffer();
+    if (!buffer.byteLength || buffer.byteLength > MAX_IMAGE_BYTES) throw new Error("Image size is invalid");
+    const bytes = new Uint8Array(buffer);
     return {
-      dataUrl: `data:${mime};base64,${base64}`,
-      filename: `photo-${String(index + 1).padStart(2, "0")}.${ext}`,
+      dataUrl: `data:${type};base64,${bytesToBase64(bytes)}`,
+      filename: `photo-${String(index + 1).padStart(2, "0")}.${extensionFor(type, url)}`,
+      hash: await sha256(bytes),
+      sourceUrl: url,
     };
-  } catch (err) {
-    console.warn("Amazon → eBay Lister Helper: image fetch failed", url, err);
+  } catch (error) {
+    console.warn("Marketplace → eBay: skipped image", url, error);
     return null;
   }
 }
 
+async function fetchUniqueImages(urls) {
+  const fetched = await Promise.all((urls || []).slice(0, 20).map(fetchImage));
+  const hashes = new Set();
+  const output = [];
+  for (const image of fetched) {
+    if (!image || hashes.has(image.hash)) continue;
+    hashes.add(image.hash);
+    image.filename = `photo-${String(output.length + 1).padStart(2, "0")}.${image.filename.split(".").pop()}`;
+    output.push(image);
+    if (output.length >= MAX_IMAGES) break;
+  }
+  return output;
+}
+
+function responseText(payload) {
+  if (payload.output_text) return payload.output_text;
+  for (const item of payload.output || []) {
+    for (const content of item.content || []) {
+      if (content.type === "output_text" && content.text) return content.text;
+    }
+  }
+  return "";
+}
+
+async function improveWithAi(product, settings) {
+  if (!settings.aiEnabled || !settings.apiKey) return null;
+  const facts = {
+    title: product.title,
+    description: Core.cleanText(product.description).slice(0, 5000),
+    bullets: Core.uniqueStrings(product.bullets).slice(0, 15),
+    specifics: Core.normalizeSpecifics(product.specifics),
+  };
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["title", "description", "specifics"],
+    properties: {
+      title: { type: "string", maxLength: 80 },
+      description: { type: "string", maxLength: 8000 },
+      specifics: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["name", "value"],
+          properties: { name: { type: "string" }, value: { type: "string" } },
+        },
+      },
+    },
+  };
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${settings.apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: settings.model || DEFAULTS.model,
+      input: [
+        { role: "system", content: [{ type: "input_text", text: "Create an accurate eBay listing from supplied product facts. Title must be at most 80 characters, front-load brand/model/product type and useful attributes, and contain no unsupported claims. Description must be plain text, editable, concise, professional, and must not mention Amazon, source price, shipping speed, warranties, or facts absent from the input. Preserve useful dimensions, material, color, model and brand in specifics. Never invent values." }] },
+        { role: "user", content: [{ type: "input_text", text: JSON.stringify(facts) }] },
+      ],
+      text: { format: { type: "json_schema", name: "ebay_listing", strict: true, schema } },
+    }),
+  });
+  if (!response.ok) throw new Error(`AI request failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+  const raw = responseText(await response.json());
+  const parsed = JSON.parse(raw);
+  return {
+    title: Core.shortenTitle(parsed.title, 80),
+    description: Core.cleanText(parsed.description).slice(0, 8000),
+    specifics: Core.normalizeSpecifics(Object.fromEntries((parsed.specifics || []).map((item) => [item.name, item.value]))),
+  };
+}
+
+async function prepareListing(product) {
+  const settings = await getSettings();
+  let ai = null;
+  let aiWarning = "";
+  try {
+    ai = await improveWithAi(product, settings);
+  } catch (error) {
+    aiWarning = error.message;
+    console.warn("Marketplace → eBay: AI fallback used", error);
+  }
+
+  const mergedSpecifics = { ...Core.normalizeSpecifics(product.specifics), ...(ai?.specifics || {}) };
+  const listing = {
+    id: crypto.randomUUID(),
+    createdAt: Date.now(),
+    sourceUrl: product.sourceUrl,
+    sourcePrice: product.sourcePrice,
+    title: Core.shortenTitle(ai?.title || product.title, 80),
+    description: Core.buildDescription({ ...product, specifics: mergedSpecifics, aiDescription: ai?.description }),
+    specifics: mergedSpecifics,
+    price: Core.calculateEbayPrice(product.sourcePrice, settings.multiplier),
+    images: await fetchUniqueImages(product.images),
+    settings: {
+      autoStart: Boolean(settings.autoStart),
+      autoPublish: Boolean(settings.autoPublish),
+      freeShipping: Boolean(settings.freeShipping),
+      multiplier: Number(settings.multiplier) || DEFAULTS.multiplier,
+    },
+    aiUsed: Boolean(ai),
+    aiWarning,
+  };
+  await chrome.storage.local.set({ [`${PENDING_PREFIX}${listing.id}`]: listing, activeListingId: listing.id });
+  return listing;
+}
+
+chrome.runtime.onInstalled.addListener((details) => {
+  chrome.storage.local.get(DEFAULTS).then((current) => chrome.storage.local.set(current));
+  if (details.reason === "install") chrome.runtime.openOptionsPage();
+});
+
+chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "DOWNLOAD_IMAGES") {
-    const { folder, urls } = message;
-    let started = 0;
-
+    const urls = Array.from(new Set(message.urls || [])).slice(0, 20);
+    const folder = safeFolder(message.title);
     urls.forEach((url, index) => {
-      let ext = "jpg";
-      const extMatch = url.match(/\.(jpg|jpeg|png|webp|gif)(?:[?#]|$)/i);
-      if (extMatch) ext = extMatch[1].toLowerCase();
-
-      const filename = `${folder}/photo-${String(index + 1).padStart(
-        2,
-        "0"
-      )}.${ext}`;
-
-      chrome.downloads.download(
-        { url, filename, conflictAction: "uniquify", saveAs: false },
-        () => {
-          if (chrome.runtime.lastError) {
-            console.warn(
-              "Amazon → eBay Lister Helper: failed to download",
-              url,
-              chrome.runtime.lastError.message
-            );
-          }
-        }
-      );
-      started += 1;
+      const ext = extensionFor("", url);
+      chrome.downloads.download({ url, filename: `${folder}/photo-${String(index + 1).padStart(2, "0")}.${ext}`, conflictAction: "uniquify", saveAs: false });
     });
-
-    sendResponse({ count: started });
-    return true;
+    sendResponse({ ok: true, count: urls.length });
+    return false;
   }
 
   if (message.type === "PREPARE_EBAY_LISTING") {
-    const { title, description, price, imageUrls } = message;
-    const urlsToFetch = (imageUrls || []).slice(0, MAX_IMAGES_FOR_EBAY);
-
-    Promise.all(urlsToFetch.map((url, i) => fetchImageAsDataUrl(url, i)))
-      .then((results) => {
-        const images = results.filter(Boolean);
-        const pendingListing = {
-          title,
-          description,
-          price,
-          images,
-          createdAt: Date.now(),
-        };
-        return chrome.storage.local
-          .set({ [PENDING_LISTING_KEY]: pendingListing })
-          .then(() => images);
-      })
-      .then((images) => {
-        chrome.tabs.create({ url: "https://www.ebay.com/sl/sell" });
-        sendResponse({ ok: true, imageCount: images.length });
-      })
-      .catch((err) => {
-        console.error(
-          "Amazon → eBay Lister Helper: failed to prepare listing",
-          err
-        );
-        sendResponse({ ok: false, error: String(err) });
+    prepareListing(message.product)
+      .then((listing) => chrome.tabs.create({ url: `https://www.ebay.com/sl/sell?a2e=${encodeURIComponent(listing.id)}` }).then(() => listing))
+      .then((listing) => sendResponse({ ok: true, imageCount: listing.images.length, aiUsed: listing.aiUsed, warning: listing.aiWarning }))
+      .catch((error) => {
+        console.error("Marketplace → eBay: prepare failed", error);
+        sendResponse({ ok: false, error: error.message || String(error) });
       });
-
-    return true; // keep the message channel open for the async response
+    return true;
   }
+
+  if (message.type === "GET_ACTIVE_LISTING") {
+    chrome.storage.local.get(["activeListingId"]).then(async ({ activeListingId }) => {
+      const id = message.id || activeListingId;
+      const data = id ? await chrome.storage.local.get(`${PENDING_PREFIX}${id}`) : {};
+      sendResponse({ listing: id ? data[`${PENDING_PREFIX}${id}`] || null : null });
+    });
+    return true;
+  }
+
+  return false;
 });
