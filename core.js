@@ -81,30 +81,200 @@
     return output;
   }
 
-  function buildDescription(product) {
-    const bullets = uniqueStrings(product.bullets).slice(0, 12);
-    const specifics = normalizeSpecifics(product.specifics);
-    const lines = [];
+  function sanitizeProductText(value) {
+    let text = String(value || "")
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/(?:^|\s)[.#][a-z][\w-]*(?:\s+[.#]?[a-z][\w-]*)*\s*\{[^{}]*\}/gi, " ")
+      .replace(/\bfunction\s+[a-z_$][\w$]*\s*\([^)]*\)\s*\{[^{}]*\}/gi, " ")
+      .replace(/\b(?:position|overflow|display|width|height|margin(?:-[a-z]+)?|padding(?:-[a-z]+)?|background(?:-[a-z]+)?|word-(?:break|wrap)|border(?:-[a-z]+)?|text-align|float)\s*:\s*[^;{}]+;?/gi, " ")
+      .replace(/[{};]/g, " ");
+    text = cleanText(text);
+    const cssSignals = (text.match(/\b(?:aplus-v\d|module-wrapper|background-image|margin-left|addtocart|window\.ue)\b/gi) || []).length;
+    if (cssSignals >= 3) {
+      const anchors = ["Product description", "Features", "About this item"];
+      const positions = anchors.map((anchor) => text.toLowerCase().lastIndexOf(anchor.toLowerCase())).filter((position) => position >= 0);
+      if (positions.length) text = text.slice(Math.max(...positions));
+      else return "";
+    }
+    return cleanText(text).slice(0, 5000);
+  }
 
-    if (product.aiDescription) lines.push(cleanText(product.aiDescription));
-    else {
-      if (product.title) lines.push(shortenTitle(product.title, 140));
-      if (product.description) lines.push("", cleanText(product.description).slice(0, 3000));
-      if (bullets.length) {
-        lines.push("", "Features");
-        bullets.forEach((bullet) => lines.push(`• ${bullet}`));
+  function findSpecific(specifics, aliases) {
+    const entries = Object.entries(specifics || {});
+    for (const alias of aliases) {
+      const wanted = alias.toLowerCase();
+      const exact = entries.find(([key]) => cleanText(key).toLowerCase() === wanted);
+      if (exact && cleanText(exact[1])) return cleanText(exact[1]);
+    }
+    return "";
+  }
+
+  function deriveEbaySpecifics(rawSpecifics, product) {
+    const raw = normalizeSpecifics(rawSpecifics);
+    const output = { ...raw };
+    const set = (key, value) => {
+      const cleaned = cleanText(value);
+      if (cleaned && !output[key]) output[key] = cleaned;
+    };
+
+    set("Brand", findSpecific(raw, ["Brand", "Brand Name"]));
+    set("Model", findSpecific(raw, ["Model", "Model Name", "Item model number"]));
+    set("MPN", findSpecific(raw, ["MPN", "Manufacturer Part Number", "Part Number"]));
+    set("Color", findSpecific(raw, ["Color", "Colour"]));
+    set("Material", findSpecific(raw, ["Material", "Material Type"]));
+    set("Size", findSpecific(raw, ["Size", "Product Size"]));
+    set("Country of Origin", findSpecific(raw, ["Country of Origin", "Country/Region of Manufacture"]));
+    set("Connectivity", findSpecific(raw, ["Connectivity", "Connectivity Technology"]));
+    set("Features", findSpecific(raw, ["Features", "Special Feature", "Special Features"]));
+    set("Type", findSpecific(raw, ["Type", "Item Type Name", "Product Type"]));
+
+    const searchable = cleanText([product?.title, product?.description, ...(product?.bullets || [])].join(" "));
+    const dimensionsEntry = Object.entries(raw).find(([key, value]) => !/package/i.test(key) && /(?:product|item)?\s*dimensions?/i.test(key) && /\d\s*[x×]\s*\d/i.test(value));
+    if (dimensionsEntry) {
+      const match = dimensionsEntry[1].match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(inches?|in\.?|cm|mm)?/i);
+      if (match) {
+        const unit = /cm|mm/i.test(match[4] || "") ? match[4].toLowerCase() : "in";
+        set("Item Length", `${match[1]} ${unit}`);
+        set("Item Width", `${match[2]} ${unit}`);
+        set("Item Height", `${match[3]} ${unit}`);
       }
     }
 
-    const entries = Object.entries(specifics).slice(0, 20);
-    if (entries.length) {
-      lines.push("", "Item specifics");
-      entries.forEach(([key, value]) => lines.push(`${key}: ${value}`));
+    const dpiValues = Array.from(searchable.matchAll(/\b(\d{3,5})\s*dpi\b/gi)).map((match) => Number(match[1])).filter(Number.isFinite);
+    if (dpiValues.length) set("Maximum DPI", String(Math.max(...dpiValues)));
+    const buttonMatch = searchable.match(/\b(\d{1,2})\s*(?:programmable\s*)?buttons?\b/i);
+    if (buttonMatch) set("Number of Buttons", buttonMatch[1]);
+    if (!output.Connectivity) {
+      const connections = [];
+      if (/\bbluetooth\b/i.test(searchable)) connections.push("Bluetooth");
+      if (/\b(?:2\.4\s*g(?:hz)?|wireless)\b/i.test(searchable)) connections.push("Wireless");
+      if (/\busb\b/i.test(searchable)) connections.push("USB");
+      set("Connectivity", connections.join(", "));
+    }
+    if (/\bcharger included\b|\bincludes? (?:a )?(?:usb )?(?:charging cable|charger)\b/i.test(searchable)) set("Charger Included", "Yes");
+    else if (/\bcharger not included\b|\bdoes not include (?:a )?charger\b/i.test(searchable)) set("Charger Included", "No");
+
+    set("Unit Quantity", "1");
+    set("Unit Type", "Unit");
+    return normalizeSpecifics(output);
+  }
+
+  function cleanFeature(value) {
+    let text = sanitizeProductText(value)
+      .replace(/^[•\-*\s]+/, "")
+      .replace(/^([A-Z][A-Z\s/&-]{2,45})[;:]\s*(?=\S)/, (_, label) => `${label.toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase())}: `)
+      .replace(/\s+[–—-]\s+|\s*\|\s*/g, ". ")
+      .replace(/\s*,\s*/g, ", ")
+      .replace(/\bMouses\b/gi, "Mice")
+      .replace(/\bMacox\b/gi, "macOS")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text.length > 190) text = shortenTitle(text, 190).replace(/[,:;.-]+$/, "");
+    return text;
+  }
+
+  function marketplaceSafeText(value) {
+    const text = sanitizeProductText(value)
+      .replace(/\b(?:Amazon|Prime)\b[^.!?]*(?:[.!?]|$)/gi, " ")
+      .replace(/[^.!?]*\b(?:credit (?:will )?automatically|at checkout|source price|seller)\b[^.!?]*(?:[.!?]|$)/gi, " ");
+    return cleanText(text);
+  }
+
+  function conciseOverview(value, title) {
+    const clean = marketplaceSafeText(value)
+      .replace(/\bPRODUCT (?:OVERVIEW|DESCRIPTION)\b/gi, " ")
+      .replace(/\bKEY FEATURES\b[\s\S]*$/i, " ");
+    const sentences = clean.match(/[^.!?]+[.!?]?/g) || [];
+    const selected = [];
+    for (const sentence of sentences) {
+      const candidate = cleanText(sentence);
+      if (candidate.length < 20 || /\b(?:buy|purchase|checkout|shipping)\b/i.test(candidate)) continue;
+      selected.push(candidate.replace(/[,:;\s]+$/, "") + (/[.!?]$/.test(candidate) ? "" : "."));
+      if (selected.length === 2 || selected.join(" ").length >= 360) break;
+    }
+    return cleanText(selected.join(" ")).slice(0, 420) || `A clear, practical overview of the ${title}, with verified features and specifications listed below.`;
+  }
+
+  function createPremiumTitle(product, limit) {
+    const max = Number(limit) > 0 ? Number(limit) : 80;
+    const specifics = deriveEbaySpecifics(product?.specifics, product);
+    const original = sanitizeProductText(product?.title)
+      .replace(/[【】]/g, " ")
+      .replace(/\s*\|\s*/g, ", ")
+      .replace(/\bMouses\b/gi, "Mouse");
+    const brand = specifics.Brand || "";
+
+    if (/\bmouse\b/i.test(original)) {
+      const parts = [brand];
+      if (/\bwireless\b/i.test(original)) parts.push("Wireless");
+      if (/\bvertical\b/i.test(original)) parts.push("Vertical");
+      if (/\bergonomic\b/i.test(original)) parts.push("Ergonomic");
+      parts.push("Mouse");
+      if (specifics.Color) parts.push(specifics.Color);
+      if (specifics["Maximum DPI"]) parts.push(`${specifics["Maximum DPI"]} DPI`);
+      if (specifics["Number of Buttons"]) parts.push(`${specifics["Number of Buttons"]}-Button`);
+      if (/\bsilent(?: click)?\b/i.test(original)) parts.push("Silent Click");
+      const unique = [];
+      const seen = new Set();
+      for (const part of parts) {
+        const key = cleanText(part).toLowerCase();
+        if (key && !seen.has(key)) { seen.add(key); unique.push(cleanText(part)); }
+      }
+      return shortenTitle(unique.join(" "), max);
     }
 
-    // Keep the description clean and editable. Source price, scripts, and
-    // copied HTML are intentionally excluded.
-    return uniqueConsecutiveLines(lines).join("\n").trim().slice(0, 10000);
+    let base = original
+      .replace(/\b(?:perfect|ideal|great) for\b.*$/i, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const additions = [specifics.Model, specifics.Color, specifics.Size].filter((value) => value && !base.toLowerCase().includes(value.toLowerCase()));
+    if (brand && !base.toLowerCase().startsWith(brand.toLowerCase())) base = `${brand} ${base}`;
+    return shortenTitle([base, ...additions].join(" "), max);
+  }
+
+  function buildPremiumDescription(product) {
+    const title = createPremiumTitle(product, 80);
+    const specifics = deriveEbaySpecifics(product?.specifics, product);
+    const description = marketplaceSafeText(product?.aiDescription || product?.description);
+    const bullets = uniqueStrings((product?.bullets || []).map(cleanFeature))
+      .filter((value) => value.length >= 4 && !/\b(?:Amazon|Prime|checkout|credit)\b/i.test(value))
+      .slice(0, 5);
+    const lines = [title, "", "Overview", conciseOverview(description, title)];
+
+    if (bullets.length) {
+      lines.push("", "Key Features");
+      bullets.forEach((bullet) => lines.push(`• ${bullet}`));
+    }
+
+    const preferred = ["Brand", "Model", "Type", "Color", "Material", "Size", "Connectivity", "Features", "Maximum DPI", "Number of Buttons", "Item Length", "Item Width", "Item Height", "Country of Origin", "MPN", "Unit Quantity", "Unit Type"];
+    const details = preferred.filter((key) => specifics[key]).map((key) => [key, specifics[key]]);
+    if (details.length) {
+      lines.push("", "Specifications");
+      details.forEach(([key, value]) => lines.push(`• ${key}: ${value}`));
+    }
+    return uniqueConsecutiveLines(lines).join("\n").trim().slice(0, 8000);
+  }
+
+  function rankConditionOptions(labels) {
+    const values = (labels || []).map((label, index) => ({ label: cleanText(label), index })).filter((item) => item.label);
+    const score = (label) => {
+      const text = label.toLowerCase();
+      if (/\bnew with\b(?=[^\n]*\bbox\b)(?=[^\n]*\bpapers?\b)/.test(text)) return 1200;
+      if (/\bnew with\b.*\b(?:box|papers?|tags)\b/.test(text)) return 1000;
+      if (/\bbrand new\b/.test(text)) return 900;
+      if (/^new(?:\b|$)/.test(text) && !/\b(?:other|without)\b/.test(text)) return 800;
+      if (/^open box\b/.test(text)) return 700;
+      return 0;
+    };
+    values.sort((left, right) => score(right.label) - score(left.label) || left.index - right.index);
+    return values[0]?.label || "";
+  }
+
+  function buildDescription(product) {
+    return buildPremiumDescription(product);
   }
 
   function uniqueConsecutiveLines(lines) {
@@ -159,13 +329,18 @@
   return {
     amazonImageKey,
     buildDescription,
+    buildPremiumDescription,
     calculateEbayPrice,
     canonicalAmazonImage,
     cleanText,
+    createPremiumTitle,
     dedupeImageCandidates,
+    deriveEbaySpecifics,
     normalizeSpecifics,
     parseMoney,
+    rankConditionOptions,
     shortenTitle,
+    sanitizeProductText,
     uniqueStrings,
   };
 });

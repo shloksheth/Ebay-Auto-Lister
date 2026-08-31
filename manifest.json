@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Marketplace → eBay Lister Helper",
-  "version": "3.0.1",
-  "description": "Creates structured eBay listings from marketplace products with deduplicated photos, editable descriptions, item specifics, pricing rules, and optional AI enhancement.",
+  "version": "3.2.2",
+  "description": "Creates structured eBay listings with deduplicated photos, source-backed specifics, no-key eBay AI descriptions, pricing rules, and automatic condition selection.",
   "permissions": ["downloads", "activeTab", "scripting", "storage", "unlimitedStorage"],
   "host_permissions": [
     "*://*.amazon.com/*",

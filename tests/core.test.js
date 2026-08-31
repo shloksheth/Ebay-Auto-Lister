@@ -32,8 +32,60 @@ test("description is plain, fact-based, and excludes source price", () => {
     bullets: ["Durable", "Durable", "Compact"],
     specifics: { Brand: "Example", Height: "4 in" },
   });
-  assert.match(description, /Features/);
+  assert.match(description, /Key Features/);
   assert.match(description, /Brand: Example/);
   assert.doesNotMatch(description, /\$12\.00/);
   assert.equal((description.match(/Durable/g) || []).length, 1);
+});
+
+test("premium description is concise, formatted, and removes Amazon checkout claims", () => {
+  const description = Core.buildPremiumDescription({
+    title: "OURA Ring 5 Sizing Kit",
+    description: "Find the ideal fit before purchasing. An Amazon credit will automatically be applied at checkout. Sizes differ from standard rings.",
+    bullets: ["SIZE BEFORE YOU BUY; Test your fit before choosing a ring", "AVAILABLE SIZES; Sizes 6-13 with no half sizes"],
+    specifics: { Brand: "OURA", Color: "Sizing Kit" },
+  });
+  assert.match(description, /^OURA Ring 5 Sizing Kit\n\nOverview/m);
+  assert.match(description, /Key Features/);
+  assert.match(description, /Specifications/);
+  assert.doesNotMatch(description, /Amazon|checkout|PRODUCT OVERVIEW|Please review all photos/i);
+});
+
+test("condition ranking prefers new with box and papers, then the top newest option", () => {
+  assert.equal(Core.rankConditionOptions(["Used", "New", "New with box and papers"]), "New with box and papers");
+  assert.equal(Core.rankConditionOptions(["New", "New with tags", "New with box and papers", "Pre-owned"]), "New with box and papers");
+  assert.equal(Core.rankConditionOptions(["Used", "Brand New", "New"]), "Brand New");
+  assert.equal(Core.rankConditionOptions(["Used", "Open box"]), "Open box");
+  assert.equal(Core.rankConditionOptions(["Used - Excellent", "Used - Good"]), "Used - Excellent");
+});
+
+test("Amazon A+ CSS and JavaScript never enter the listing description", () => {
+  const contaminated = `.aplus-v2 .aplus-content-wrapper { position: relative; overflow: hidden; }
+    function logShoppableMetrics(moduleName) { window.ue.count(moduleName); }
+    Product description A comfortable wireless mouse for everyday work.`;
+  const cleaned = Core.sanitizeProductText(contaminated);
+  assert.doesNotMatch(cleaned, /aplus|position:|function|window\.ue/i);
+  assert.match(cleaned, /comfortable wireless mouse/i);
+});
+
+test("local premium generator creates an informative mouse title without an API key", () => {
+  const product = {
+    title: "Woddlffy Ergonomic Mouse, Vertical Ergonomic Wireless Computer Mouse Purple with Silent Click",
+    bullets: ["6 Buttons with adjustable 1000/1200/1600 DPI"],
+    specifics: { Brand: "Woddlffy", Color: "Purple" },
+  };
+  const title = Core.createPremiumTitle(product, 80);
+  assert.equal(title, "Woddlffy Wireless Vertical Ergonomic Mouse Purple 1600 DPI 6-Button Silent Click");
+  assert.ok(title.length <= 80);
+});
+
+test("product dimensions are converted into eBay item-specific fields", () => {
+  const specifics = Core.deriveEbaySpecifics({
+    Brand: "Example",
+    "Product Dimensions": "4.2 x 2.9 x 3.1 inches",
+  }, { title: "Example Product" });
+  assert.equal(specifics["Item Length"], "4.2 in");
+  assert.equal(specifics["Item Width"], "2.9 in");
+  assert.equal(specifics["Item Height"], "3.1 in");
+  assert.equal(specifics["Unit Quantity"], "1");
 });

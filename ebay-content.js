@@ -3,7 +3,25 @@
 
   const Core = globalThis.A2ECore;
   const MAX_AGE = 2 * 60 * 60 * 1000;
-  const state = { running: true, busy: false, searchSubmitted: false, choiceClicked: false, uploadStarted: false, uploadConfirmed: false, published: false, specificCount: 0, filled: new Set() };
+  const state = {
+    running: true,
+    busy: false,
+    searchSubmitted: false,
+    choiceClicked: false,
+    conditionChoiceClicked: false,
+    uploadAttempted: false,
+    uploadStarted: false,
+    uploadConfirmed: false,
+    photoBefore: 0,
+    published: false,
+    suggestedApplied: false,
+    specificCount: 0,
+    specificTotal: 0,
+    ebayAiRequested: false,
+    ebayAiCompleted: false,
+    ebayAiStartedAt: 0,
+    filled: new Set(),
+  };
 
   function visible(element) {
     return Boolean(element && element.isConnected && element.getClientRects().length && getComputedStyle(element).visibility !== "hidden");
@@ -46,7 +64,7 @@
   }
 
   function buttons() {
-    return Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]')).filter((element) => visible(element) && !element.disabled && !isHeader(element));
+    return Array.from(document.querySelectorAll('button, a[href], input[type="submit"], input[type="button"], [role="button"]')).filter((element) => visible(element) && !element.disabled && !isHeader(element));
   }
 
   function buttonText(element) {
@@ -87,7 +105,7 @@
   }
 
   function chooseBestMatch(title) {
-    const actionRegex = /sell (?:one|this)|select|list this|use this|choose/;
+    const actionRegex = /sell (?:one|this)|select|list this|use this|choose|start with this|use this title/;
     const candidates = buttons().filter((button) => actionRegex.test(buttonText(button)));
     let best = null;
     for (const button of candidates) {
@@ -99,7 +117,42 @@
       best.button.click();
       return true;
     }
-    return Boolean(clickButton([/continue without (?:a )?match/, /create (?:a )?new listing/, /list without match/], /cancel|back/));
+    return continueWithoutMatch();
+  }
+
+  function continueWithoutMatch() {
+    return Boolean(clickButton([
+      /^continue without (?:a )?match(?:ing item)?$/,
+      /^continue without selecting (?:a )?match$/,
+      /^create (?:a )?new listing$/,
+      /^create listing without (?:a )?match$/,
+      /^list (?:it )?without (?:a )?match$/,
+      /don['’]t see (?:a )?match.*continue/,
+    ], /cancel|back|search again/));
+  }
+
+  function descriptionHtml(value) {
+    const escape = (text) => String(text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const lines = String(value || "").split(/\r?\n/).map((line) => Core.cleanText(line));
+    let html = "";
+    let inList = false;
+    lines.forEach((line, index) => {
+      if (!line) {
+        if (inList) { html += "</ul>"; inList = false; }
+        return;
+      }
+      if (/^[•*-]\s+/.test(line)) {
+        if (!inList) { html += "<ul>"; inList = true; }
+        html += `<li>${escape(line.replace(/^[•*-]\s+/, ""))}</li>`;
+        return;
+      }
+      if (inList) { html += "</ul>"; inList = false; }
+      if (index === 0) html += `<h2>${escape(line)}</h2>`;
+      else if (/^(Overview|Key Features|Specifications)$/i.test(line)) html += `<h3>${escape(line)}</h3>`;
+      else html += `<p>${escape(line)}</p>`;
+    });
+    if (inList) html += "</ul>";
+    return html;
   }
 
   function insertEditableText(editable, value) {
@@ -117,21 +170,64 @@
     return normalized(editable.textContent).startsWith(normalized(value).slice(0, 40));
   }
 
+  function insertEditableHtml(editable, value) {
+    const html = descriptionHtml(value);
+    editable.focus();
+    let inserted = false;
+    try {
+      const selection = editable.ownerDocument.getSelection();
+      const range = editable.ownerDocument.createRange();
+      range.selectNodeContents(editable);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      inserted = editable.ownerDocument.execCommand("insertHTML", false, html);
+    } catch (_) {}
+    if (!inserted) editable.innerHTML = html;
+    editable.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: null }));
+    editable.dispatchEvent(new Event("change", { bubbles: true }));
+    return normalized(editable.textContent).length >= 40;
+  }
+
+  function descriptionEditable() {
+    const editables = Array.from(document.querySelectorAll('[contenteditable="true"], [role="textbox"][contenteditable]')).filter(visible);
+    const editable = editables.find((element) => /desc|describe/.test(describe(element) + " " + normalized(element.closest("section,div")?.querySelector("label,h2,h3")?.textContent))) || editables[0];
+    if (editable) return editable;
+    for (const frame of document.querySelectorAll("iframe")) {
+      if (!/desc|editor|summary|rte/i.test(`${frame.id} ${frame.name} ${frame.title}`)) continue;
+      try { if (frame.contentDocument?.body) return frame.contentDocument.body; } catch (_) {}
+    }
+    return null;
+  }
+
   function fillDescription(description) {
     const textarea = findField([/description/, /describe.*item/], "textarea");
     if (textarea) return setValue(textarea, description);
 
-    const editables = Array.from(document.querySelectorAll('[contenteditable="true"], [role="textbox"][contenteditable]')).filter(visible);
-    const editable = editables.find((element) => /desc|describe/.test(describe(element) + " " + normalized(element.closest("section,div")?.querySelector("label,h2,h3")?.textContent))) || editables[0];
-    if (editable) return insertEditableText(editable, description);
-
-    for (const frame of document.querySelectorAll("iframe")) {
-      if (!/desc|editor/i.test(`${frame.id} ${frame.name} ${frame.title}`)) continue;
-      try {
-        if (frame.contentDocument?.body) return insertEditableText(frame.contentDocument.body, description);
-      } catch (_) {}
-    }
+    const editable = descriptionEditable();
+    if (editable) return insertEditableHtml(editable, description);
     return false;
+  }
+
+  function requestEbayAiDescription() {
+    const writing = buttons().find((button) => /^writing(?:\.{3}|…)?$/.test(buttonText(button)));
+    const undo = buttons().find((button) => /^undo ai description$/.test(buttonText(button)));
+    const editor = descriptionEditable();
+    if (state.ebayAiRequested) {
+      if (undo) {
+        state.ebayAiCompleted = true;
+        return { pending: false, ok: true };
+      }
+      if (writing || Date.now() - state.ebayAiStartedAt < 45000) return { pending: true, ok: false };
+      const fallbackReady = normalized(editor?.textContent).length >= 60;
+      if (fallbackReady) state.ebayAiCompleted = true;
+      return { pending: false, ok: fallbackReady };
+    }
+    const button = buttons().find((item) => /^(?:use )?ai description$/.test(buttonText(item)));
+    if (!button) return { pending: false, ok: false };
+    button.click();
+    state.ebayAiRequested = true;
+    state.ebayAiStartedAt = Date.now();
+    return { pending: true, ok: false };
   }
 
   function selectValue(select, wanted) {
@@ -142,25 +238,164 @@
     return setValue(select, (exact || partial)?.value || "");
   }
 
-  function fillSpecifics(specifics) {
-    let count = 0;
-    for (const [key, value] of Object.entries(specifics || {})) {
-      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const field = findField([new RegExp(`(^|\\s)${escaped}($|\\s)`, "i")], "input,textarea,select");
-      if (!field) continue;
-      const ok = field instanceof HTMLSelectElement ? selectValue(field, value) : setValue(field, value);
-      if (ok) count += 1;
+  const SPECIFIC_ALIASES = {
+    "Brand Name": "Brand",
+    Manufacturer: "Brand",
+    "Item model number": "Model",
+    "Model Name": "Model",
+    "Connectivity Technology": "Connectivity",
+    "Special Feature": "Features",
+    "Special Features": "Features",
+    "Part Number": "MPN",
+    "Manufacturer Part Number": "MPN",
+    "Country/Region of Manufacture": "Country of Origin",
+  };
+
+  function specificControl(key) {
+    const wanted = SPECIFIC_ALIASES[key] || key;
+    const exactName = `attributes.${wanted}`;
+    const byName = Array.from(document.querySelectorAll("input,textarea,select,button")).find((element) => visible(element) && element.getAttribute("name") === exactName);
+    if (byName) return { field: byName, key: wanted };
+    const byAria = Array.from(document.querySelectorAll("input,textarea,select,button")).find((element) => visible(element) && normalized(element.getAttribute("aria-label")) === normalized(wanted));
+    return byAria ? { field: byAria, key: wanted } : null;
+  }
+
+  function pressEnter(element) {
+    element.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+    element.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+  }
+
+  async function fillCustomSpecific(button, value) {
+    if (normalized(buttonText(button)) === normalized(value)) return true;
+    button.click();
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    const optionCandidates = Array.from(document.querySelectorAll('[role="option"], [role="menuitem"], [role="menuitemradio"], [role="listbox"] button, [class*="menu" i] button, [class*="dropdown" i] button')).filter((element) => visible(element) && element !== button && !element.closest("#a2e-ebay-panel"));
+    const target = normalized(value);
+    const exact = optionCandidates.find((option) => normalized(option.textContent || option.getAttribute("aria-label")) === target);
+    const partial = optionCandidates.find((option) => {
+      const text = normalized(option.textContent || option.getAttribute("aria-label"));
+      return text.length > 1 && (text.includes(target) || target.includes(text));
+    });
+    if (exact || partial) {
+      (exact || partial).click();
+      return true;
     }
-    return count;
+
+    const overlayInputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])')).filter((input) => visible(input) && !isHeader(input) && /search|enter|own|value|filter/i.test(describe(input)));
+    const input = overlayInputs[overlayInputs.length - 1];
+    if (input && setValue(input, value)) {
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      const newOptions = Array.from(document.querySelectorAll('[role="option"], [role="menuitem"], [role="menuitemradio"], [role="listbox"] button')).filter(visible);
+      const match = newOptions.find((option) => normalized(option.textContent || option.getAttribute("aria-label")) === target) ||
+        newOptions.find((option) => normalized(option.textContent || option.getAttribute("aria-label")).includes(target));
+      if (match) match.click();
+      else pressEnter(input);
+      return true;
+    }
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+    return false;
+  }
+
+  async function fillSpecifics(specifics) {
+    const priority = ["Brand", "Type", "Model", "Tracking Method", "Connectivity", "Features", "Color", "Number of Buttons", "Maximum DPI", "MPN", "Item Height", "Item Width", "Item Length", "Unit Quantity", "Unit Type", "Country of Origin", "Charger Included"];
+    const source = Core.deriveEbaySpecifics(specifics, { specifics });
+    if (!state.suggestedApplied) {
+      let selected = 0;
+      const suggestions = Array.from(document.querySelectorAll('input[name="extracted-attribute-selector"][type="checkbox"]'));
+      suggestions.forEach((checkbox) => {
+        const text = Core.cleanText(checkbox.getAttribute("aria-label") || (checkbox.labels ? Array.from(checkbox.labels).map((label) => label.textContent).join(" ") : "") || checkbox.parentElement?.textContent);
+        const match = text.match(/^\s*([^:]+):\s*(.+?)\s*$/);
+        const wanted = match && Object.entries(source).find(([key, value]) => normalized(key) === normalized(match[1]) && normalized(value) === normalized(match[2]));
+        if (checkbox.checked && !wanted) checkbox.click();
+        if (wanted && !checkbox.checked) checkbox.click();
+        if (wanted) selected += 1;
+      });
+      const applyAll = buttons().find((button) => /^apply all$/.test(buttonText(button)));
+      if (applyAll && selected) {
+        applyAll.click();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      state.suggestedApplied = true;
+    }
+
+    const keys = [...priority, ...Object.keys(source)];
+    const handled = new Set();
+    for (const rawKey of keys) {
+      const key = SPECIFIC_ALIASES[rawKey] || rawKey;
+      if (handled.has(key) || !source[rawKey]) continue;
+      handled.add(key);
+      const match = specificControl(key);
+      if (!match) continue;
+      const { field } = match;
+      let ok = false;
+      if (field instanceof HTMLSelectElement) ok = selectValue(field, source[rawKey]);
+      else if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) ok = setValue(field, source[rawKey]);
+      else if (field instanceof HTMLButtonElement) ok = await fillCustomSpecific(field, source[rawKey]);
+      if (ok) await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    let matched = 0;
+    let total = 0;
+    handled.clear();
+    for (const rawKey of keys) {
+      const key = SPECIFIC_ALIASES[rawKey] || rawKey;
+      if (handled.has(key) || !source[rawKey]) continue;
+      handled.add(key);
+      const match = specificControl(key);
+      if (!match) continue;
+      total += 1;
+      const actual = match.field instanceof HTMLSelectElement
+        ? match.field.selectedOptions[0]?.textContent
+        : match.field instanceof HTMLInputElement || match.field instanceof HTMLTextAreaElement
+          ? match.field.value
+          : match.field.textContent;
+      const expected = normalized(source[rawKey]);
+      const current = normalized(actual);
+      if (current === expected || (current.length > 1 && (current.includes(expected) || expected.includes(current)))) matched += 1;
+    }
+    return { matched, total };
+  }
+
+  function chooseNewestConditionOption() {
+    const pageMentionsCondition = /\bcondition\b/i.test(`${document.querySelector("main")?.textContent || ""} ${document.body.textContent || ""}`);
+    if (!pageMentionsCondition) return null;
+    const textFor = (control) => Core.cleanText(
+      control.getAttribute("aria-label") ||
+      (control.labels ? Array.from(control.labels).map((label) => label.textContent).join(" ") : "") ||
+      control.textContent ||
+      control.closest("label")?.textContent ||
+      control.parentElement?.textContent
+    );
+    const clickable = [
+      ...buttons(),
+      ...Array.from(document.querySelectorAll('input[type="radio"], input[type="checkbox"]')).filter((input) => visible(input) && !input.disabled),
+    ];
+    const candidates = clickable.filter((control) => {
+      const text = textFor(control);
+      return text.length <= 90 && /^(?:brand new|new(?:\b|\s+with)|open box\b|used(?:\b|\s+-)|pre-owned\b|for parts\b)/i.test(text) && !/continue|cancel|back|search/i.test(text) && !control.closest("#a2e-ebay-panel");
+    }).sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top || left.getBoundingClientRect().left - right.getBoundingClientRect().left);
+    if (!candidates.length) return null;
+    const preferred = Core.rankConditionOptions(candidates.map(textFor));
+    const choice = candidates.find((control) => textFor(control) === preferred) || candidates[0];
+    choice.click();
+    choice.dataset.a2eConditionText = textFor(choice);
+    return choice;
   }
 
   function fillCondition() {
     const select = findField([/condition/], "select");
-    if (select) return selectValue(select, "New");
-    const newInput = Array.from(document.querySelectorAll('input[type="radio"], input[type="checkbox"]')).find((input) => visible(input) && /(^|\s)new($|\s)/i.test(describe(input)));
+    if (select) {
+      const preferred = Core.rankConditionOptions(Array.from(select.options).map((option) => option.textContent));
+      return preferred ? selectValue(select, preferred) : false;
+    }
+    const conditionInputs = Array.from(document.querySelectorAll('input[type="radio"], input[type="checkbox"]')).filter((input) => visible(input) && /\bcondition\b|\bnew\b|\bused\b/i.test(describe(input)));
+    const preferred = Core.rankConditionOptions(conditionInputs.map((input) => Core.cleanText(input.labels ? Array.from(input.labels).map((label) => label.textContent).join(" ") : describe(input))));
+    const newInput = conditionInputs.find((input) => normalized(input.labels ? Array.from(input.labels).map((label) => label.textContent).join(" ") : describe(input)) === normalized(preferred));
     if (newInput && !newInput.checked) newInput.click();
     if (newInput) return true;
-    return Boolean(clickButton([/^new$/], /other|like new|new other/));
+    const current = buttons().find((button) => /^new$/.test(buttonText(button)) && /condition/i.test(`${button.getAttribute("aria-label")} ${button.closest("section,div")?.textContent || ""}`));
+    if (current) return true;
+    return Boolean(clickButton([/^new with (?:box(?:\s*(?:\/|or)\s*papers?)?|tags|papers?)$/, /^brand new$/, /^new(?: item condition)?$/], /without|other|like new|new other/));
   }
 
   function enableFreeShipping() {
@@ -191,6 +426,8 @@
   }
 
   function photoCount() {
+    const editButtons = document.querySelectorAll('button[aria-label^="Edit or view photo "]');
+    if (editButtons.length) return editButtons.length;
     const selectors = [
       '[data-testid*="photo" i] img:not([src=""])',
       '[class*="photo" i] img[src^="blob:"]',
@@ -202,30 +439,41 @@
 
   async function uploadPhotos(images) {
     if (!images?.length) return { ok: false, reason: "No usable source photos" };
-    if (state.uploadConfirmed) return { ok: true, count: photoCount() };
+    const currentCount = photoCount();
+    if (!state.uploadAttempted && currentCount >= Math.min(images.length, 24)) {
+      state.uploadConfirmed = true;
+      return { ok: true, count: currentCount };
+    }
+    if (state.uploadConfirmed || (state.uploadAttempted && currentCount > state.photoBefore)) {
+      state.uploadConfirmed = true;
+      return { ok: true, count: currentCount };
+    }
+    if (state.uploadAttempted) return { ok: false, reason: "Photo batch was sent once; not resending to prevent duplicates" };
     if (state.uploadStarted) return { ok: false, pending: true, reason: "Waiting for eBay to process photos" };
     const inputs = Array.from(document.querySelectorAll('input[type="file"]')).filter((input) => /image|photo|jpg|jpeg|png/i.test(`${input.accept} ${input.id} ${input.name}`));
     const input = inputs[0] || document.querySelector('input[type="file"]');
     if (!input) return { ok: false, reason: "Photo uploader is not on this step yet" };
 
-    const before = photoCount();
+    const before = currentCount;
     const transfer = new DataTransfer();
     images.forEach((image, index) => transfer.items.add(dataUrlToFile(image, index)));
     state.uploadStarted = true;
+    state.uploadAttempted = true;
+    state.photoBefore = before;
     input.files = transfer.files;
     input.dispatchEvent(new Event("change", { bubbles: true }));
-    input.dispatchEvent(new Event("input", { bubbles: true }));
 
     for (let check = 0; check < 30; check += 1) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       const count = photoCount();
-      if (count >= Math.min(images.length, before + 1)) {
+      if (count > before) {
         state.uploadConfirmed = true;
+        state.uploadStarted = false;
         return { ok: true, count };
       }
     }
     state.uploadStarted = false;
-    return { ok: false, reason: "eBay did not confirm the upload; retry is available" };
+    return { ok: false, reason: "Photo batch sent once; waiting for eBay without retrying" };
   }
 
   function setStatus(label, ok, detail) {
@@ -237,7 +485,8 @@
 
   function requiredReady(listing) {
     const needsSpecifics = Object.keys(listing.specifics || {}).length > 0;
-    return state.filled.has("title") && state.filled.has("description") && state.filled.has("price") &&
+    const descriptionReady = state.filled.has("description") && (!state.ebayAiRequested || state.ebayAiCompleted);
+    return state.filled.has("title") && descriptionReady && state.filled.has("price") &&
       state.filled.has("condition") && state.filled.has("shipping") && state.uploadConfirmed &&
       (!needsSpecifics || state.filled.has("specifics"));
   }
@@ -251,16 +500,21 @@
     if (!state.filled.has("description") && fillDescription(listing.description)) state.filled.add("description");
     if (!state.filled.has("price") && price && setValue(price, listing.price)) state.filled.add("price");
     if (!state.filled.has("specifics")) {
-      state.specificCount = fillSpecifics(listing.specifics);
-      if (state.specificCount) state.filled.add("specifics");
+      const result = await fillSpecifics(listing.specifics);
+      state.specificCount = result.matched;
+      state.specificTotal = result.total;
+      if (result.total > 0 && result.matched === result.total) state.filled.add("specifics");
     }
     if (!state.filled.has("condition") && fillCondition()) state.filled.add("condition");
     if (!state.filled.has("shipping") && (!listing.settings.freeShipping || enableFreeShipping())) state.filled.add("shipping");
 
+    let aiDescription = { pending: false, ok: false };
+    if (listing.settings.useEbayAi !== false && state.filled.has("description")) aiDescription = requestEbayAiDescription();
+
     setStatus("title", state.filled.has("title"), "Title");
-    setStatus("description", state.filled.has("description"), "Editable description");
+    setStatus("description", state.ebayAiCompleted || (state.filled.has("description") && !aiDescription.pending), state.ebayAiCompleted ? "eBay AI description (editable, no API key)" : aiDescription.pending ? "eBay AI is writing the description" : "Premium editable description");
     setStatus("price", state.filled.has("price"), `Price $${listing.price}`);
-    setStatus("specifics", state.filled.has("specifics"), `${state.specificCount} matching item specifics`);
+    setStatus("specifics", state.filled.has("specifics"), `${state.specificCount}/${state.specificTotal || "?"} source-backed item specifics`);
     setStatus("shipping", state.filled.has("shipping"), "Free shipping");
 
     const photoResult = await uploadPhotos(listing.images);
@@ -286,7 +540,7 @@
     panel.innerHTML = `
       <div class="a2e-panel-header"><span>eBay one-click listing</span><button type="button" class="a2e-panel-close">×</button></div>
       <div class="a2e-panel-title">${escapeHtml(listing.title)}</div>
-      <div class="a2e-panel-meta">$${escapeHtml(listing.price)} · ${listing.images.length} unique photos · ${listing.aiUsed ? "AI enhanced" : "clean fallback"}</div>
+      <div class="a2e-panel-meta">$${escapeHtml(listing.price)} · ${listing.images.length} unique photos · ${escapeHtml(listing.generator || (listing.aiUsed ? "AI enhanced" : "local premium generator"))}</div>
       <div class="a2e-panel-status">
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="flow">… Finding the correct eBay step</div>
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="title">… Title</div>
@@ -298,11 +552,11 @@
         <div class="a2e-status-row a2e-step-pending" data-a2e-status="publish">… Final submission</div>
       </div>
       <div class="a2e-panel-actions"><button type="button" data-a2e-action="retry">Retry now</button><button type="button" data-a2e-action="toggle">Pause</button></div>
-      ${listing.aiWarning ? `<div class="a2e-status-note">AI was unavailable, so the accurate local fallback was used.</div>` : ""}
+      ${listing.aiWarning ? `<div class="a2e-status-note">Cloud AI was unavailable; the built-in premium generator was used instead.</div>` : ""}
     `;
     document.body.appendChild(panel);
     panel.querySelector(".a2e-panel-close").addEventListener("click", () => panel.remove());
-    panel.querySelector('[data-a2e-action="retry"]').addEventListener("click", () => { state.searchSubmitted = false; state.choiceClicked = false; state.uploadStarted = false; advance(listing); });
+    panel.querySelector('[data-a2e-action="retry"]').addEventListener("click", () => { state.searchSubmitted = false; state.choiceClicked = false; state.conditionChoiceClicked = false; advance(listing); });
     panel.querySelector('[data-a2e-action="toggle"]').addEventListener("click", (event) => { state.running = !state.running; event.currentTarget.textContent = state.running ? "Pause" : "Resume"; if (state.running) advance(listing); });
   }
 
@@ -321,6 +575,12 @@
         return;
       }
 
+      const started = clickButton([/^list an item$/, /^sell now$/], /draft|delete/);
+      if (started) {
+        setStatus("flow", true, "Opened eBay’s item listing form");
+        return;
+      }
+
       const search = searchField();
       if (search && !state.searchSubmitted) {
         setValue(search, listing.title);
@@ -329,6 +589,23 @@
         if (submitted) {
           state.searchSubmitted = true;
           setStatus("flow", true, "Product search submitted automatically");
+          return;
+        }
+      }
+
+      if (!state.conditionChoiceClicked) {
+        const condition = chooseNewestConditionOption();
+        if (condition) {
+          state.conditionChoiceClicked = true;
+          setStatus("flow", true, `Selected ${condition.dataset.a2eConditionText || Core.cleanText(condition.textContent || condition.getAttribute("aria-label"))}`);
+          return;
+        }
+      }
+
+      if (state.conditionChoiceClicked) {
+        const continued = clickButton([/^continue to listing$/, /^continue$/], /cancel|back/);
+        if (continued) {
+          setStatus("flow", true, "Condition confirmed; opening the listing form");
           return;
         }
       }

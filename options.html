@@ -22,8 +22,11 @@
       </section>
 
       <section>
-        <h2>Optional AI enhancement</h2>
-        <label class="check"><input id="aiEnabled" type="checkbox"> Use AI to optimize titles and descriptions</label>
+        <h2>AI description</h2>
+        <label class="check"><input id="useEbayAi" type="checkbox"> Use eBay AI to write the description (no API key required)</label>
+        <p class="note">The extension first inserts a clean, formatted description from verified product facts, then asks eBay’s built-in AI to improve it. The result remains editable.</p>
+        <h3>Optional OpenAI enhancement</h3>
+        <label class="check"><input id="aiEnabled" type="checkbox"> Also use OpenAI to optimize the title and facts</label>
         <label class="field">OpenAI API key
           <input id="apiKey" type="password" autocomplete="off" placeholder="sk-…">
           <small>Stored only in this Chrome profile. Do not share an unpacked extension folder containing credentials.</small>
@@ -31,7 +34,7 @@
         <label class="field">Model
           <input id="model" type="text" value="gpt-5-mini">
         </label>
-        <p class="note">If AI is disabled or unavailable, the extension uses an accurate local 80-character title and clean editable description instead.</p>
+        <p class="note">This API key is optional. The default eBay AI flow above works without it.</p>
       </section>
 
       <section class="warning">

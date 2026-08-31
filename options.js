@@ -1,4 +1,4 @@
-const DEFAULTS = { aiEnabled: false, apiKey: "", model: "gpt-5-mini", multiplier: 1.6, freeShipping: true, autoStart: true, autoPublish: false };
+const DEFAULTS = { aiEnabled: false, apiKey: "", model: "gpt-5-mini", multiplier: 1.6, freeShipping: true, useEbayAi: true, autoStart: true, autoPublish: false };
 
 async function restore() {
   const settings = await chrome.storage.local.get(DEFAULTS);
@@ -17,6 +17,7 @@ async function save() {
     model: document.getElementById("model").value.trim() || DEFAULTS.model,
     multiplier: Number(document.getElementById("multiplier").value) || DEFAULTS.multiplier,
     freeShipping: document.getElementById("freeShipping").checked,
+    useEbayAi: document.getElementById("useEbayAi").checked,
     autoStart: document.getElementById("autoStart").checked,
     autoPublish: document.getElementById("autoPublish").checked,
   };

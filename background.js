@@ -10,6 +10,7 @@ const DEFAULTS = {
   model: "gpt-5-mini",
   multiplier: 1.6,
   freeShipping: true,
+  useEbayAi: true,
   autoStart: true,
   autoPublish: false,
 };
@@ -23,7 +24,7 @@ function safeFolder(title) {
 }
 
 function extensionFor(type, url) {
-  const allowed = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" };
+  const allowed = { "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/heic": "heic" };
   if (allowed[type]) return allowed[type];
   return (String(url).match(/\.(jpg|jpeg|png|webp|gif)(?:[?#]|$)/i) || [null, "jpg"])[1].toLowerCase();
 }
@@ -47,6 +48,7 @@ async function fetchImage(url, index) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const type = (response.headers.get("content-type") || "image/jpeg").split(";")[0].toLowerCase();
     if (!type.startsWith("image/")) throw new Error(`Unexpected content type ${type}`);
+    if (!/image\/(?:jpeg|jpg|png|heic)/i.test(type)) throw new Error(`eBay does not accept ${type}`);
     const buffer = await response.arrayBuffer();
     if (!buffer.byteLength || buffer.byteLength > MAX_IMAGE_BYTES) throw new Error("Image size is invalid");
     const bytes = new Uint8Array(buffer);
@@ -90,7 +92,7 @@ async function improveWithAi(product, settings) {
   if (!settings.aiEnabled || !settings.apiKey) return null;
   const facts = {
     title: product.title,
-    description: Core.cleanText(product.description).slice(0, 5000),
+    description: Core.sanitizeProductText(product.description).slice(0, 5000),
     bullets: Core.uniqueStrings(product.bullets).slice(0, 15),
     specifics: Core.normalizeSpecifics(product.specifics),
   };
@@ -145,14 +147,15 @@ async function prepareListing(product) {
     console.warn("Marketplace → eBay: AI fallback used", error);
   }
 
-  const mergedSpecifics = { ...Core.normalizeSpecifics(product.specifics), ...(ai?.specifics || {}) };
+  const mergedSpecifics = Core.deriveEbaySpecifics({ ...Core.normalizeSpecifics(product.specifics), ...(ai?.specifics || {}) }, product);
+  const localTitle = Core.createPremiumTitle({ ...product, specifics: mergedSpecifics }, 80);
   const listing = {
     id: crypto.randomUUID(),
     createdAt: Date.now(),
     sourceUrl: product.sourceUrl,
     sourcePrice: product.sourcePrice,
-    title: Core.shortenTitle(ai?.title || product.title, 80),
-    description: Core.buildDescription({ ...product, specifics: mergedSpecifics, aiDescription: ai?.description }),
+    title: Core.shortenTitle(ai?.title || localTitle, 80),
+    description: Core.buildPremiumDescription({ ...product, title: ai?.title || localTitle, specifics: mergedSpecifics, aiDescription: ai?.description }),
     specifics: mergedSpecifics,
     price: Core.calculateEbayPrice(product.sourcePrice, settings.multiplier),
     images: await fetchUniqueImages(product.images),
@@ -160,9 +163,11 @@ async function prepareListing(product) {
       autoStart: Boolean(settings.autoStart),
       autoPublish: Boolean(settings.autoPublish),
       freeShipping: Boolean(settings.freeShipping),
+      useEbayAi: settings.useEbayAi !== false,
       multiplier: Number(settings.multiplier) || DEFAULTS.multiplier,
     },
     aiUsed: Boolean(ai),
+    generator: ai ? "OpenAI + eBay AI" : "eBay AI (no API key) + local fallback",
     aiWarning,
   };
   await chrome.storage.local.set({ [`${PENDING_PREFIX}${listing.id}`]: listing, activeListingId: listing.id });
@@ -190,7 +195,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "PREPARE_EBAY_LISTING") {
     prepareListing(message.product)
-      .then((listing) => chrome.tabs.create({ url: `https://www.ebay.com/sl/sell?a2e=${encodeURIComponent(listing.id)}` }).then(() => listing))
+      .then((listing) => chrome.tabs.create({ url: `https://www.ebay.com/sl/prelist/suggest?a2e=${encodeURIComponent(listing.id)}` }).then(() => listing))
       .then((listing) => sendResponse({ ok: true, imageCount: listing.images.length, aiUsed: listing.aiUsed, warning: listing.aiWarning }))
       .catch((error) => {
         console.error("Marketplace → eBay: prepare failed", error);

@@ -1,4 +1,4 @@
-# Amazon → eBay Lister Helper 3.0.1
+# Amazon → eBay Lister Helper 3.2.2
 
 This Chrome extension reads a product page, prepares a structured eBay listing,
 opens eBay's seller flow, and automatically advances through the forms it can
@@ -26,6 +26,52 @@ identify.
 - The Chrome toolbar/extension icons use the M Dropshipping parachute package
   mark, with transparent 16, 48, and 128 pixel versions.
 
+## What changed in 3.1
+
+- Photo upload is now strictly one-shot. Only the file input's `change` event
+  is dispatched, and a timed-out verification never resends the batch.
+- Verification counts eBay's real **Edit or view photo N** controls, preventing
+  the retry loop that produced 24 accepted duplicates and many failed uploads.
+- Only eBay-supported JPEG, PNG, or HEIC files are prepared for listing.
+- Amazon A+ scripts, CSS, templates, and hidden code are removed before any
+  description is generated.
+- A built-in no-key premium generator produces an optimized title, overview,
+  feature list, and product-details section. OpenAI remains optional.
+- Dimensions such as `4.2 x 2.9 x 3.1 inches` are converted to eBay Item
+  Length, Width, and Height values; common Amazon labels are mapped to eBay's
+  Brand, Model, MPN, Connectivity, Features, and other controls.
+- Current eBay `attributes.*` custom dropdowns and text fields are filled by
+  their exact accessible names, and eBay's suggested specifics are applied.
+- New listings open directly at `/sl/prelist/suggest`; the landing-page
+  **List an item**/**Sell now** buttons remain automated as a fallback.
+- Pre-list condition choices prioritize **New with box**, **New with tags**,
+  **New with papers**, **Brand new**, then **New**.
+
+## What changed in 3.2
+
+- Item-specific dropdowns now recognize eBay's current `menuitemradio`
+  controls, including searchable values such as Brand and Color.
+- The completion check counts only source-backed fields whose actual eBay value
+  matches the extracted value. Unrelated prefilled fields no longer create a
+  false success checkmark.
+- Suggested specifics are applied only when both their name and value exactly
+  match the product source. Guesses such as heart-rate sensors on a sizing kit
+  are left unchecked.
+- The description is inserted as editable rich text with a concise Overview,
+  up to five Key Features, and verified Specifications. Marketplace checkout
+  claims and generic boilerplate are removed.
+- eBay's built-in AI description action is enabled by default and needs no API
+  key. The clean local description remains available if eBay AI is unavailable.
+- Condition-choice screens rank **New with box and papers** first, then other
+  brand-new choices, then the top option shown by eBay.
+- Condition confirmation modals using radio buttons are supported, including
+  eBay's **New**, **Open box**, **Used**, and **For parts** screen. The extension
+  selects the best new option and clicks **Continue to listing**.
+- Watch, jewelry, and collectible condition screens explicitly prioritize
+  **New with box and papers** over a plain **New** choice. When eBay cannot find
+  a suitable catalog product, the extension selects **Continue without match**
+  (including eBay's alternate wording) and proceeds with a new listing.
+
 ## Install or update
 
 1. Open `chrome://extensions`.
@@ -41,9 +87,9 @@ identify.
 - Keep the price multiplier at `1.6` to use the requested pricing rule.
 - Leave **free shipping** and **automatic form advance** enabled for the
   one-click workflow.
-- To use AI, enable it and enter your own OpenAI API key and model name. The key
-  is stored in `chrome.storage.local` inside your Chrome profile; it is never
-  placed in this extension folder.
+- Leave **Use eBay AI** enabled for AI descriptions without an API key. OpenAI
+  is an optional extra title/fact enhancement; if used, its key is stored in
+  `chrome.storage.local` inside your Chrome profile and never in this folder.
 - Test several listings with **Automatically click List it** disabled. When
   enabled, the extension can publish and potentially incur eBay fees.
 

@@ -16,6 +16,13 @@
     return node ? Core.cleanText(node.textContent) : "";
   }
 
+  function textWithoutCode(node) {
+    if (!node) return "";
+    const clone = node.cloneNode(true);
+    clone.querySelectorAll("script, style, noscript, template, svg").forEach((element) => element.remove());
+    return Core.sanitizeProductText(clone.textContent);
+  }
+
   function firstText(selectors) {
     for (const selector of selectors) {
       const value = textOf(selector);
@@ -24,8 +31,16 @@
     return "";
   }
 
+  function firstCleanText(selectors) {
+    for (const selector of selectors) {
+      const value = textWithoutCode(document.querySelector(selector));
+      if (value) return value;
+    }
+    return "";
+  }
+
   function texts(selector) {
-    return Core.uniqueStrings(Array.from(document.querySelectorAll(selector)).map((node) => node.textContent));
+    return Core.uniqueStrings(Array.from(document.querySelectorAll(selector)).map(textWithoutCode));
   }
 
   function jsonLdProduct() {
@@ -77,11 +92,11 @@
       const title = textOf("#productTitle");
       const priceText = firstText(["#corePrice_feature_div .a-price .a-offscreen", "#apex_desktop .a-price .a-offscreen", ".a-price .a-offscreen", "#priceblock_ourprice"]);
       const bullets = texts("#feature-bullets li .a-list-item").filter((line) => !/see more|warranty/i.test(line));
-      const description = firstText(["#productDescription", "#aplus_feature_div", "#aplus"]);
-      const specifics = gatherTableSpecifics("#productOverview_feature_div tr, #productDetails_techSpec_section_1 tr, #productDetails_detailBullets_sections1 tr");
+      const description = firstCleanText(["#productDescription", "#aplus_feature_div", "#aplus"]);
+      const rawSpecifics = gatherTableSpecifics("#productOverview_feature_div tr, #productDetails_techSpec_section_1 tr, #productDetails_detailBullets_sections1 tr");
       document.querySelectorAll("#detailBullets_feature_div li").forEach((row) => {
-        const parts = Core.cleanText(row.textContent).split(":");
-        if (parts.length > 1) addSpecific(specifics, parts.shift(), parts.join(":"));
+        const parts = textWithoutCode(row).split(":");
+        if (parts.length > 1) addSpecific(rawSpecifics, parts.shift(), parts.join(":"));
       });
 
       const candidates = [];
@@ -96,7 +111,9 @@
         }
       });
       const images = Core.dedupeImageCandidates(candidates, Core.amazonImageKey, MAX_IMAGES).map(Core.canonicalAmazonImage);
-      return { source: "amazon", sourceUrl: location.href, title, priceText, sourcePrice: Core.parseMoney(priceText), bullets, description, specifics, images };
+      const product = { source: "amazon", sourceUrl: location.href, title, priceText, sourcePrice: Core.parseMoney(priceText), bullets, description, specifics: rawSpecifics, images };
+      product.specifics = Core.deriveEbaySpecifics(rawSpecifics, product);
+      return product;
     },
   };
 
